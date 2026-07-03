@@ -91,6 +91,49 @@ function SeverityBadge({ s }: { s: string }) {
   );
 }
 
+// ── SelectionHeader ───────────────────────────────────────────────────────────
+
+function SelectionHeader({
+  total, selected, label, onSelectAll, onDeselectAll,
+}: {
+  total: number;
+  selected: number;
+  label: string;
+  onSelectAll: () => void;
+  onDeselectAll: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between">
+      <p className="text-xs font-medium text-muted-foreground">
+        {total} {label} generated
+        {selected > 0 && selected < total && (
+          <span className="ml-1 text-primary">· {selected} selected</span>
+        )}
+      </p>
+      <div className="flex gap-2">
+        {selected < total && (
+          <button
+            type="button"
+            onClick={onSelectAll}
+            className="text-[11px] font-medium text-primary hover:underline"
+          >
+            Select all
+          </button>
+        )}
+        {selected > 0 && (
+          <button
+            type="button"
+            onClick={onDeselectAll}
+            className="text-[11px] font-medium text-muted-foreground hover:text-foreground hover:underline"
+          >
+            Deselect all
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props) {
@@ -102,6 +145,7 @@ export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props)
   const [loading,  startLoading]  = useTransition();
   const [applying, startApplying] = useTransition();
   const [applied,  setApplied]    = useState(false);
+  const [selectedItems, setSelectedItems] = useState<Set<number>>(new Set());
 
   // Per-tool input state
   const [projectId,   setProjectId]   = useState('');
@@ -122,6 +166,23 @@ export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props)
     setError('');
     setUpgrade(false);
     setApplied(false);
+    setSelectedItems(new Set());
+  }
+
+  function toggleItem(i: number) {
+    setSelectedItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  }
+
+  function selectAll(count: number) {
+    setSelectedItems(new Set(Array.from({ length: count }, (_, i) => i)));
+  }
+
+  function deselectAll() {
+    setSelectedItems(new Set());
   }
 
   // ── Call AI ─────────────────────────────────────────────────────────────────
@@ -152,6 +213,11 @@ export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props)
           if (data.upgrade) setUpgrade(true);
         } else {
           setResult(data.result);
+          // Auto-select all items for tools that support individual selection
+          const r = data.result;
+          const count =
+            r?.tasks?.length ?? r?.subtasks?.length ?? r?.suggestions?.length ?? 0;
+          if (count > 0) setSelectedItems(new Set(Array.from({ length: count }, (_, i) => i)));
         }
       } catch {
         setError('Network error. Please try again.');
@@ -161,13 +227,15 @@ export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props)
 
   // ── Apply actions ────────────────────────────────────────────────────────────
   function applyResult() {
-    if (!result) return;
+    if (!result || selectedItems.size === 0) return;
     startApplying(async () => {
       try {
         if (selected === 'task-generator' || selected === 'project-planner' || selected === 'meeting-notes') {
           const taskList: Array<{ title: string; description?: string; priority?: TaskPriority; estimated_hours?: number }> =
             result.tasks ?? [];
-          for (const t of taskList) {
+          for (let i = 0; i < taskList.length; i++) {
+            if (!selectedItems.has(i)) continue;
+            const t = taskList[i];
             await createTask({
               title:           t.title,
               description:     t.description,
@@ -179,13 +247,15 @@ export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props)
           }
         } else if (selected === 'subtask-generator') {
           const subs: Array<{ title: string }> = result.subtasks ?? [];
-          for (const s of subs) {
-            if (taskId) await createSubtask(taskId, s.title);
+          for (let i = 0; i < subs.length; i++) {
+            if (!selectedItems.has(i)) continue;
+            if (taskId) await createSubtask(taskId, subs[i].title);
           }
         } else if (selected === 'priority-suggestions') {
           const sug: Array<{ task_id: string; suggested: TaskPriority }> = result.suggestions ?? [];
-          for (const s of sug) {
-            await updateTask(s.task_id, { priority: s.suggested });
+          for (let i = 0; i < sug.length; i++) {
+            if (!selectedItems.has(i)) continue;
+            await updateTask(sug[i].task_id, { priority: sug[i].suggested });
           }
         }
         setApplied(true);
@@ -352,10 +422,30 @@ export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props)
         const taskList: any[] = result.tasks ?? [];
         return (
           <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">{taskList.length} tasks generated</p>
+            <SelectionHeader
+              total={taskList.length}
+              selected={selectedItems.size}
+              label="tasks"
+              onSelectAll={() => selectAll(taskList.length)}
+              onDeselectAll={deselectAll}
+            />
             {taskList.map((t, i) => (
-              <div key={i} className="flex items-start gap-3 rounded-xl border border-border bg-muted/30 px-4 py-3">
-                <div className="flex-1">
+              <label
+                key={i}
+                className={cn(
+                  'flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 transition-colors',
+                  selectedItems.has(i)
+                    ? 'border-primary/40 bg-primary/5'
+                    : 'border-border bg-muted/20 opacity-60',
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedItems.has(i)}
+                  onChange={() => toggleItem(i)}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+                />
+                <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium">{t.title}</p>
                   {t.description && <p className="mt-0.5 text-xs text-muted-foreground">{t.description}</p>}
                 </div>
@@ -365,7 +455,7 @@ export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props)
                     <span className="text-[10px] text-muted-foreground">{t.estimated_hours}h est.</span>
                   )}
                 </div>
-              </div>
+              </label>
             ))}
           </div>
         );
@@ -375,12 +465,31 @@ export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props)
         const subs: any[] = result.subtasks ?? [];
         return (
           <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">{subs.length} subtasks generated</p>
+            <SelectionHeader
+              total={subs.length}
+              selected={selectedItems.size}
+              label="subtasks"
+              onSelectAll={() => selectAll(subs.length)}
+              onDeselectAll={deselectAll}
+            />
             {subs.map((s, i) => (
-              <div key={i} className="flex items-center gap-2 rounded-xl border border-border px-4 py-2.5">
-                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+              <label
+                key={i}
+                className={cn(
+                  'flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-2.5 transition-colors',
+                  selectedItems.has(i)
+                    ? 'border-primary/40 bg-primary/5'
+                    : 'border-border bg-muted/20 opacity-60',
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedItems.has(i)}
+                  onChange={() => toggleItem(i)}
+                  className="h-4 w-4 shrink-0 accent-primary"
+                />
                 <p className="text-sm">{s.title}</p>
-              </div>
+              </label>
             ))}
           </div>
         );
@@ -415,9 +524,29 @@ export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props)
         }
         return (
           <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">{sug.length} priority changes suggested</p>
+            <SelectionHeader
+              total={sug.length}
+              selected={selectedItems.size}
+              label="changes"
+              onSelectAll={() => selectAll(sug.length)}
+              onDeselectAll={deselectAll}
+            />
             {sug.map((s, i) => (
-              <div key={i} className="flex items-start gap-3 rounded-xl border border-border px-4 py-3">
+              <label
+                key={i}
+                className={cn(
+                  'flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 transition-colors',
+                  selectedItems.has(i)
+                    ? 'border-primary/40 bg-primary/5'
+                    : 'border-border bg-muted/20 opacity-60',
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedItems.has(i)}
+                  onChange={() => toggleItem(i)}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+                />
                 <div className="flex-1">
                   <p className="text-sm font-medium">{s.title}</p>
                   <p className="mt-0.5 text-xs text-muted-foreground">{s.reason}</p>
@@ -427,7 +556,7 @@ export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props)
                   <ChevronRight className="h-3 w-3 text-muted-foreground" />
                   <PriorityBadge p={s.suggested} />
                 </div>
-              </div>
+              </label>
             ))}
           </div>
         );
@@ -729,11 +858,15 @@ export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props)
             {canApply && !applied && (
               <button
                 onClick={applyResult}
-                disabled={applying}
-                className="tc-btn-secondary w-full gap-2"
+                disabled={applying || selectedItems.size === 0}
+                className="tc-btn-secondary w-full gap-2 disabled:opacity-40"
               >
                 {applying ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
-                {applying ? 'Applying…' : 'Apply to workspace'}
+                {applying
+                  ? 'Adding…'
+                  : selectedItems.size === 0
+                    ? 'Select items to add'
+                    : `Add ${selectedItems.size} selected to workspace`}
               </button>
             )}
 
