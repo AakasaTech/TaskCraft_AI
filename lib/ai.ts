@@ -33,16 +33,14 @@ export async function callOpenAI(
 
   return new Promise((resolve, reject) => {
     const req = https.request(
+      'https://api.openai.com/v1/chat/completions',
       {
-        hostname: 'api.openai.com',
-        path:     '/v1/chat/completions',
-        method:   'POST',
+        method: 'POST',
         headers: {
           'Content-Type':   'application/json',
           Authorization:    `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Length': Buffer.byteLength(body),
         },
-        keepAlive: false,
       },
       (res) => {
         let data = '';
