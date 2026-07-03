@@ -36,7 +36,7 @@ export default async function AIPage() {
     .from('projects')
     .select('id, name, color')
     .eq('workspace_id', wid)
-    .eq('archived', false)
+    .neq('status', 'archived')
     .order('name');
 
   // Open tasks assigned to current user

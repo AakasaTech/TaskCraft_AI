@@ -54,7 +54,7 @@ export default async function TimePage() {
       .from('projects')
       .select('id, name, color, hourly_rate, clients(name)')
       .eq('workspace_id', wid)
-      .eq('archived', false)
+      .neq('status', 'archived')
       .order('name'),
 
     supabase

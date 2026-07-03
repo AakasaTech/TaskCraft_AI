@@ -48,7 +48,7 @@ function RegisterContent() {
       password,
       options: {
         data: { full_name: fullName, plan },
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback`,
       },
     });
     if (error) {
@@ -71,7 +71,7 @@ function RegisterContent() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/auth/callback?plan=${plan}`,
+        redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?plan=${plan}`,
       },
     });
     if (error) {

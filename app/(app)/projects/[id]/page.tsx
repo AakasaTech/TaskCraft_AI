@@ -30,20 +30,23 @@ export default async function ProjectDetailPage({
   if (!user) return null;
 
   // Workspace + plan check
-  const { data: membership } = await supabase
-    .from('workspace_members')
-    .select('workspace_id, workspaces(plan)')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
+  const [memberRes, profileRes] = await Promise.all([
+    supabase
+      .from('workspace_members')
+      .select('workspace_id')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from('profiles')
+      .select('plan')
+      .eq('id', user.id)
+      .single(),
+  ]);
 
-  const wid = membership?.workspace_id;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ws = Array.isArray((membership as any)?.workspaces)
-    ? (membership as any).workspaces[0]
-    : (membership as any)?.workspaces;
-  const isTeamPlan = ws?.plan === 'team';
+  const wid = memberRes.data?.workspace_id;
+  const isTeamPlan = profileRes.data?.plan === 'team';
 
   // Core project
   const { data: project } = await supabase
