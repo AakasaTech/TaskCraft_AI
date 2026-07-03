@@ -1,0 +1,13 @@
+{
+  "name": "TaskCraft AI",
+  "short_name": "TaskCraft",
+  "description": "Plan smarter. Track faster. Invoice instantly.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#6644ee",
+  "icons": [
+    { "src": "/android-chrome-192x192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/android-chrome-512x512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

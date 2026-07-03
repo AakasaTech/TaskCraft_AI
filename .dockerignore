@@ -1,0 +1,55 @@
+# Dependencies — reinstalled inside the image
+node_modules
+
+# Build outputs — rebuilt inside the image
+.next
+out
+dist
+build
+
+# Environment files — must be supplied at runtime, never baked into the image
+.env
+.env.*
+!.env.example
+
+# Version control
+.git
+.gitignore
+
+# Editor / OS noise
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Supabase local dev state
+supabase/.branches
+supabase/.temp
+
+# CI / deployment
+.vercel
+.github
+
+# Logs
+*.log
+npm-debug.log*
+
+# Testing
+coverage
+.nyc_output
+
+# TypeScript incremental build info
+*.tsbuildinfo
+next-env.d.ts
+
+# Documentation (not needed in image)
+*.md
+docs/
+
+# Docker files themselves (avoid recursive context noise)
+Dockerfile
+.dockerignore
+docker-compose*.yml
