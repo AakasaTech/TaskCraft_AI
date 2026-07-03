@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard, FolderKanban, CheckSquare, Clock,
   CalendarDays, BarChart3, Users, Plug, CreditCard,
-  Settings, ChevronLeft, ChevronRight, LogOut,
+  Settings, ChevronLeft, ChevronRight, LogOut, Sparkles,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
@@ -42,8 +42,9 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Insights',
     items: [
-      { href: '/reports', label: 'Reports', icon: BarChart3 },
-      { href: '/clients', label: 'Clients', icon: Users },
+      { href: '/ai',      label: 'AI Assistant', icon: Sparkles },
+      { href: '/reports', label: 'Reports',       icon: BarChart3 },
+      { href: '/clients', label: 'Clients',       icon: Users },
     ],
   },
   {

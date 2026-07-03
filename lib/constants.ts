@@ -105,6 +105,13 @@ export const PAYPAL_PLAN_IDS: Record<string, Plan> = {
   [process.env.PAYPAL_PLAN_ID_TEAM_YEARLY  ?? '']: 'team',
 };
 
+// ── AI plan limits ────────────────────────────────────────────────
+export const AI_LIMITS: Record<string, { monthly: number; team_tools: boolean }> = {
+  free: { monthly: 5,  team_tools: false },
+  solo: { monthly: -1, team_tools: false },
+  team: { monthly: -1, team_tools: true  },
+};
+
 // ── Limits helper ─────────────────────────────────────────────────
 export function isUnlimited(limit: number): boolean {
   return limit === -1;
