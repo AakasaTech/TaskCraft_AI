@@ -227,22 +227,47 @@ export function AIHub({ plan, usageThisMonth, projects, tasks, members }: Props)
           </div>
         );
 
-      case 'subtask-generator':
+      case 'subtask-generator': {
+        const filteredTasks = projectId
+          ? tasks.filter((t) => t.project_id === projectId)
+          : tasks;
         return (
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Task to break down</label>
-            <Select value={taskId} onValueChange={setTaskId}>
-              <SelectTrigger className="h-9 text-sm"><SelectValue placeholder="Select a task" /></SelectTrigger>
-              <SelectContent>
-                {tasks.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.title} {t.project_name ? `(${t.project_name})` : ''}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="space-y-3">
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Project (optional)</label>
+              <Select
+                value={projectId}
+                onValueChange={(v) => { setProjectId(v); setTaskId(''); }}
+              >
+                <SelectTrigger className="h-9 text-sm"><SelectValue placeholder="Filter by project" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">All projects</SelectItem>
+                  {projects.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Task to break down</label>
+              <Select value={taskId} onValueChange={setTaskId}>
+                <SelectTrigger className="h-9 text-sm"><SelectValue placeholder="Select a task" /></SelectTrigger>
+                <SelectContent>
+                  {filteredTasks.length === 0 ? (
+                    <SelectItem value="_empty" disabled>
+                      {projectId ? 'No tasks in this project' : 'No open tasks found'}
+                    </SelectItem>
+                  ) : (
+                    filteredTasks.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.title}{!projectId && t.project_name ? ` (${t.project_name})` : ''}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         );
+      }
 
       case 'project-planner':
         return (

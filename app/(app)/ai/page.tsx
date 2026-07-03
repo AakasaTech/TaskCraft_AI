@@ -39,16 +39,16 @@ export default async function AIPage() {
     .neq('status', 'archived')
     .order('name');
 
-  // Open tasks assigned to current user
+  // All open top-level tasks in the workspace (no assignee filter — subtask
+  // generator needs to see any task, not just ones assigned to the viewer)
   const { data: tasksRaw } = await supabase
     .from('tasks')
     .select('id, title, priority, status, due_date, project_id, projects(name)')
     .eq('workspace_id', wid)
-    .eq('assignee_id', user.id)
     .not('status', 'in', '("done","backlog")')
     .is('parent_task_id', null)
     .order('due_date', { ascending: true, nullsFirst: false })
-    .limit(50);
+    .limit(200);
 
   // Team members (for Team plan tools)
   const { data: membersRaw } = plan === 'team'
