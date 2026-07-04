@@ -110,18 +110,21 @@ export interface WorkspaceMember {
 
 // ── clients ───────────────────────────────────────────────────────
 export interface Client {
-  id:           string;
-  workspace_id: string;
-  name:         string;
-  email:        string | null;
-  phone:        string | null;
-  company:      string | null;
-  website:      string | null;
-  address:      ClientAddress;
-  notes:        string | null;
-  created_by:   string | null;
-  created_at:   string;
-  updated_at:   string;
+  id:                   string;
+  workspace_id:         string;
+  name:                 string;
+  email:                string | null;
+  billing_email:        string | null;
+  phone:                string | null;
+  company:              string | null;
+  website:              string | null;
+  address:              ClientAddress;
+  notes:                string | null;
+  default_hourly_rate:  number | null;
+  currency:             string;
+  created_by:           string | null;
+  created_at:           string;
+  updated_at:           string;
 }
 
 export interface ClientAddress {
@@ -450,11 +453,16 @@ export interface CreateTimeEntryInput {
 }
 
 export interface CreateClientInput {
-  name:        string;
-  email?:      string;
-  phone?:      string;
-  company?:    string;
-  website?:    string;
-  address?:    Partial<ClientAddress>;
-  notes?:      string;
+  name:                 string;
+  email?:               string;
+  billing_email?:       string;
+  phone?:               string;
+  company?:             string;
+  website?:             string;
+  address?:             Partial<ClientAddress>;
+  notes?:               string;
+  default_hourly_rate?: number | null;
+  currency?:            string;
 }
+
+export interface UpdateClientInput extends Partial<CreateClientInput> {}

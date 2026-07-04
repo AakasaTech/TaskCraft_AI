@@ -32,7 +32,8 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
 
   const isPublic = PUBLIC_PATHS.some((p) => pathname === p) ||
-    pathname.startsWith('/auth/');
+    pathname.startsWith('/auth/') ||
+    pathname.startsWith('/api/auth/');
   const isAuth = AUTH_PATHS.some((p) => pathname.startsWith(p));
   const isAdmin = ADMIN_PATHS.some((p) => pathname.startsWith(p));
   const isApp = pathname.startsWith('/dashboard') ||

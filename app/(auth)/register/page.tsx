@@ -65,19 +65,9 @@ function RegisterContent() {
     }
   }
 
-  async function handleGoogle() {
+  function handleGoogle() {
     setGoogleLoading(true);
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?plan=${plan}`,
-      },
-    });
-    if (error) {
-      toast.error(error.message);
-      setGoogleLoading(false);
-    }
+    window.location.href = `/api/auth/google?next=/dashboard`;
   }
 
   if (emailSent) {

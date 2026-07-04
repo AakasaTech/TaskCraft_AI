@@ -51,19 +51,9 @@ function LoginContent() {
     router.refresh();
   }
 
-  async function handleGoogle() {
+  function handleGoogle() {
     setGoogleLoading(true);
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=${encodeURIComponent(next)}`,
-      },
-    });
-    if (error) {
-      toast.error(error.message);
-      setGoogleLoading(false);
-    }
+    window.location.href = `/api/auth/google?next=${encodeURIComponent(next)}`;
   }
 
   const busy = loading || googleLoading;

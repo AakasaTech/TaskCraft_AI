@@ -1,39 +1,93 @@
 import type { Metadata } from 'next';
-import { Users, Plus } from 'lucide-react';
+import { Building2 } from 'lucide-react';
+import { createClient } from '@/lib/supabase/server';
 import { PageHeader } from '@/components/shared/PageHeader';
-import { EmptyState } from '@/components/shared/EmptyState';
+import { ClientList } from './_components/ClientList';
+import type { ClientWithStats } from './_components/ClientList';
 
 export const metadata: Metadata = { title: 'Clients' };
 
-export default function ClientsPage() {
+export default async function ClientsPage() {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+
+  const { data: membership } = await supabase
+    .from('workspace_members')
+    .select('workspace_id')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  const wid = membership?.workspace_id;
+
+  if (!wid) {
+    return (
+      <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
+        <Building2 className="mb-4 h-12 w-12 text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">Workspace not found.</p>
+      </div>
+    );
+  }
+
+  const [clientsRes, projectsRes, timeRes] = await Promise.all([
+    supabase
+      .from('clients')
+      .select('*')
+      .eq('workspace_id', wid)
+      .order('name'),
+
+    supabase
+      .from('projects')
+      .select('id, client_id')
+      .eq('workspace_id', wid)
+      .not('client_id', 'is', null),
+
+    supabase
+      .from('time_entries')
+      .select('project_id, duration_minutes, billable')
+      .eq('workspace_id', wid)
+      .eq('billable', true)
+      .not('duration_minutes', 'is', null),
+  ]);
+
+  // Build project counts per client
+  const projectCountMap: Record<string, number> = {};
+  for (const p of (projectsRes.data ?? []) as { id: string; client_id: string }[]) {
+    projectCountMap[p.client_id] = (projectCountMap[p.client_id] ?? 0) + 1;
+  }
+
+  // Build project → client map for time lookup
+  const projectClientMap: Record<string, string> = {};
+  for (const p of (projectsRes.data ?? []) as { id: string; client_id: string }[]) {
+    projectClientMap[p.id] = p.client_id;
+  }
+
+  // Billable hours per client (via projects)
+  const billableMap: Record<string, number> = {};
+  for (const e of (timeRes.data ?? []) as { project_id: string | null; duration_minutes: number }[]) {
+    if (!e.project_id) continue;
+    const cid = projectClientMap[e.project_id];
+    if (!cid) continue;
+    billableMap[cid] = (billableMap[cid] ?? 0) + e.duration_minutes / 60;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const clients: ClientWithStats[] = (clientsRes.data ?? []).map((c: any) => ({
+    ...c,
+    project_count:   projectCountMap[c.id] ?? 0,
+    open_task_count: 0,
+    billable_hours:  Math.round((billableMap[c.id] ?? 0) * 10) / 10,
+  }));
+
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="Clients"
         subtitle="Manage clients and link them to projects for billing"
-        actions={
-          <button className="tc-btn-primary" disabled>
-            <Plus className="h-3.5 w-3.5" />
-            Add Client
-          </button>
-        }
       />
-
-      <div className="tc-card">
-        <div className="empty-state py-24">
-          <div className="empty-state-icon">
-            <Users className="h-7 w-7 text-muted-foreground" />
-          </div>
-          <h3 className="text-base font-semibold">Clients coming soon</h3>
-          <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-            Manage your clients here, link them to projects, and send invoices directly to
-            BillCraft AI with a single click.
-          </p>
-          <span className="mt-5 inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-            Phase 3
-          </span>
-        </div>
-      </div>
+      <ClientList clients={clients} />
     </div>
   );
 }
