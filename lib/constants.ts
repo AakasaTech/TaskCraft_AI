@@ -112,6 +112,37 @@ export const AI_LIMITS: Record<string, { monthly: number; team_tools: boolean }>
   team: { monthly: -1, team_tools: true  },
 };
 
+// ── Plan feature lists (for pricing UI) ───────────────────────────
+export const PLAN_FEATURES: Record<Plan, string[]> = {
+  free: [
+    '1 user',
+    'Up to 3 active projects',
+    'Unlimited tasks',
+    'Basic time tracking',
+    'Limited AI usage (5 requests/month)',
+  ],
+  solo: [
+    'Unlimited projects',
+    'Unlimited tasks & time tracking',
+    'All AI productivity features',
+    'Reports & analytics',
+    'Client management',
+    'Export reports (CSV)',
+    'BillCraft AI integration',
+    'SupportCraft AI integration',
+  ],
+  team: [
+    'Everything in Solo',
+    'Unlimited team members',
+    'Roles & permissions',
+    'Team task assignment',
+    'Team workload & time reports',
+    'Team AI features',
+    'Audit logs',
+    'Priority support',
+  ],
+};
+
 // ── Limits helper ─────────────────────────────────────────────────
 export function isUnlimited(limit: number): boolean {
   return limit === -1;

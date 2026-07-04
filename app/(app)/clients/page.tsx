@@ -3,6 +3,7 @@ import { Building2 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/server';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { ClientList } from './_components/ClientList';
+import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
 import type { ClientWithStats } from './_components/ClientList';
 
 export const metadata: Metadata = { title: 'Clients' };
@@ -12,15 +13,33 @@ export default async function ClientsPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
 
-  const { data: membership } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
+  const [membershipRes, profileRes] = await Promise.all([
+    supabase
+      .from('workspace_members')
+      .select('workspace_id')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from('profiles')
+      .select('plan')
+      .eq('id', user.id)
+      .single(),
+  ]);
 
-  const wid = membership?.workspace_id;
+  // Gate: Clients require Solo or Team plan
+  const userPlan = profileRes.data?.plan ?? 'free';
+  if (userPlan === 'free') {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <PageHeader title="Clients" subtitle="Manage clients and link them to projects for billing" />
+        <UpgradePrompt feature="clients" requiredPlan="solo" />
+      </div>
+    );
+  }
+
+  const wid = membershipRes.data?.workspace_id;
 
   if (!wid) {
     return (

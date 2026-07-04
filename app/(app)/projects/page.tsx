@@ -1,10 +1,13 @@
 import type { Metadata } from 'next';
 import { FolderKanban } from 'lucide-react';
+import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { ProjectsClient } from './_components/ProjectsClient';
 import type { ProjectRow } from './_components/ProjectsClient';
 import type { ProjectStatus } from '@/lib/types';
+import { PLANS } from '@/lib/constants';
+import type { Plan } from '@/lib/types';
 
 export const metadata: Metadata = { title: 'Projects' };
 
@@ -34,8 +37,9 @@ export default async function ProjectsPage() {
     );
   }
 
-  // Fetch projects + clients in parallel
-  const [projectsRes, taskStatsRes, timeRes, clientsRes] = await Promise.all([
+  // Fetch profile plan in parallel with project data
+  const [profileRes, projectsRes, taskStatsRes, timeRes, clientsRes] = await Promise.all([
+    supabase.from('profiles').select('plan').eq('id', user.id).single(),
     supabase
       .from('projects')
       .select('id, name, description, color, status, client_id, start_date, due_date, budget, hourly_rate, billable, clients(name, company)')
@@ -105,12 +109,38 @@ export default async function ProjectsPage() {
     id: c.id as string, name: c.name as string, company: c.company as string | null,
   }));
 
+  const plan          = (profileRes.data?.plan ?? 'free') as Plan;
+  const projectLimit  = PLANS[plan].max_projects;
+  const activeCount   = projects.filter((p) => p.status !== 'archived').length;
+  const atLimit       = projectLimit !== -1 && activeCount >= projectLimit;
+
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="Projects"
         subtitle="Manage and track all your projects"
       />
+
+      {/* Plan usage banner — only shown for free plan */}
+      {projectLimit !== -1 && (
+        <div className={`flex items-center justify-between rounded-xl border px-4 py-3 text-sm ${
+          atLimit
+            ? 'border-destructive/30 bg-destructive/5 text-destructive'
+            : 'border-border bg-muted/50 text-muted-foreground'
+        }`}>
+          <span>
+            {activeCount} / {projectLimit} active project{projectLimit !== 1 ? 's' : ''} used
+            {atLimit ? ' — limit reached' : ''}
+          </span>
+          <Link
+            href="/settings/billing"
+            className="text-xs font-semibold text-primary hover:underline shrink-0"
+          >
+            Upgrade for unlimited →
+          </Link>
+        </div>
+      )}
+
       <ProjectsClient projects={projects} clients={clients} />
     </div>
   );

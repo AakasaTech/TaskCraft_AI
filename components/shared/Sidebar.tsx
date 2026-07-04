@@ -5,62 +5,79 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard, FolderKanban, CheckSquare, Clock,
   CalendarDays, BarChart3, Users, Plug, CreditCard,
-  Settings, ChevronLeft, ChevronRight, LogOut, Sparkles,
+  Settings, ChevronLeft, ChevronRight, LogOut, Sparkles, Lock,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import type { Plan } from '@/lib/types';
+
+// Minimum plan required to fully access a nav item ('free' = always unlocked)
+type MinPlan = 'free' | 'solo' | 'team';
 
 interface NavItem {
-  href: string;
-  label: string;
-  icon: React.ElementType;
-  badge?: string;
+  href:    string;
+  label:   string;
+  icon:    React.ElementType;
+  badge?:  string;
+  minPlan: MinPlan;
 }
 
 interface NavGroup {
   label?: string;
-  items: NavItem[];
+  items:  NavItem[];
 }
 
 const NAV_GROUPS: NavGroup[] = [
   {
     items: [
-      { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      { href: '/dashboard', label: 'Dashboard',     icon: LayoutDashboard, minPlan: 'free' },
     ],
   },
   {
     label: 'Work',
     items: [
-      { href: '/projects',  label: 'Projects',      icon: FolderKanban },
-      { href: '/tasks',     label: 'Tasks',          icon: CheckSquare },
-      { href: '/time',      label: 'Time Tracking',  icon: Clock },
-      { href: '/calendar',  label: 'Calendar',       icon: CalendarDays },
+      { href: '/projects',  label: 'Projects',      icon: FolderKanban,    minPlan: 'free' },
+      { href: '/tasks',     label: 'Tasks',          icon: CheckSquare,     minPlan: 'free' },
+      { href: '/time',      label: 'Time Tracking',  icon: Clock,           minPlan: 'free' },
+      { href: '/calendar',  label: 'Calendar',       icon: CalendarDays,    minPlan: 'free' },
     ],
   },
   {
     label: 'Insights',
     items: [
-      { href: '/ai',      label: 'AI Assistant', icon: Sparkles },
-      { href: '/reports', label: 'Reports',       icon: BarChart3 },
-      { href: '/clients', label: 'Clients',       icon: Users },
+      { href: '/ai',      label: 'AI Assistant', icon: Sparkles, minPlan: 'free' },
+      { href: '/reports', label: 'Reports',       icon: BarChart3, minPlan: 'solo' },
+      { href: '/clients', label: 'Clients',       icon: Users,     minPlan: 'solo' },
     ],
   },
   {
     label: 'Account',
     items: [
-      { href: '/integrations',     label: 'Integrations', icon: Plug },
-      { href: '/settings/billing', label: 'Billing',      icon: CreditCard },
-      { href: '/settings',         label: 'Settings',     icon: Settings },
+      { href: '/integrations',     label: 'Integrations', icon: Plug,       minPlan: 'solo' },
+      { href: '/settings/billing', label: 'Billing',      icon: CreditCard, minPlan: 'free' },
+      { href: '/settings',         label: 'Settings',     icon: Settings,   minPlan: 'free' },
     ],
   },
 ];
 
+const PLAN_RANK: Record<string, number> = { free: 0, solo: 1, team: 2 };
+
+function isLocked(userPlan: string, minPlan: MinPlan): boolean {
+  return (PLAN_RANK[userPlan] ?? 0) < (PLAN_RANK[minPlan] ?? 0);
+}
+
 const PLAN_COLORS: Record<string, string> = {
-  free:  'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
-  solo:  'bg-primary/10 text-primary',
-  team:  'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300',
+  free: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
+  solo: 'bg-primary/10 text-primary',
+  team: 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300',
+};
+
+const PLAN_BADGE_LABEL: Record<MinPlan, string> = {
+  free: '',
+  solo: 'Solo',
+  team: 'Team',
 };
 
 interface SidebarProps {
@@ -137,8 +154,10 @@ export function Sidebar({ user }: SidebarProps) {
               <div className="my-2 h-px bg-border/60" />
             )}
             <div className="space-y-0.5">
-              {group.items.map(({ href, label, icon: Icon, badge }) => {
-                const active = isActive(href);
+              {group.items.map(({ href, label, icon: Icon, badge, minPlan }) => {
+                const active  = isActive(href);
+                const locked  = isLocked(plan, minPlan);
+
                 return (
                   <Link
                     key={href}
@@ -147,14 +166,32 @@ export function Sidebar({ user }: SidebarProps) {
                     className={cn(
                       active ? 'sidebar-item-active' : 'sidebar-item',
                       collapsed && 'justify-center px-2',
+                      locked && !active && 'opacity-60',
                     )}
                   >
                     <Icon className="h-4 w-4 shrink-0" />
                     {!collapsed && <span className="flex-1 truncate">{label}</span>}
-                    {!collapsed && badge && (
-                      <span className="ml-auto rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                        {badge}
-                      </span>
+
+                    {/* Right-side indicators */}
+                    {!collapsed && (
+                      <>
+                        {badge && (
+                          <span className="ml-auto rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                            {badge}
+                          </span>
+                        )}
+                        {locked && (
+                          <span className="ml-auto flex items-center gap-0.5 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-muted-foreground">
+                            <Lock className="h-2.5 w-2.5" />
+                            {PLAN_BADGE_LABEL[minPlan]}
+                          </span>
+                        )}
+                      </>
+                    )}
+
+                    {/* Collapsed lock dot */}
+                    {collapsed && locked && (
+                      <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-muted-foreground/50" />
                     )}
                   </Link>
                 );
@@ -203,6 +240,17 @@ export function Sidebar({ user }: SidebarProps) {
             </>
           )}
         </div>
+
+        {/* Upgrade nudge for free users */}
+        {!collapsed && plan === 'free' && (
+          <Link
+            href="/settings/billing"
+            className="mt-2 flex items-center justify-center gap-1.5 rounded-lg border border-primary/20 bg-primary/5 px-3 py-1.5 text-[11px] font-semibold text-primary hover:bg-primary/10 transition-colors"
+          >
+            <Sparkles className="h-3 w-3" />
+            Upgrade plan
+          </Link>
+        )}
       </div>
     </aside>
   );

@@ -1,6 +1,9 @@
 import type { Metadata } from 'next';
+import { redirect } from 'next/navigation';
 import { ExternalLink, CheckCircle2, Zap } from 'lucide-react';
+import { createClient } from '@/lib/supabase/server';
 import { PageHeader } from '@/components/shared/PageHeader';
+import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
 
 export const metadata: Metadata = { title: 'Integrations' };
 
@@ -25,7 +28,19 @@ const INTEGRATIONS = [
   },
 ];
 
-export default function IntegrationsPage() {
+export default async function IntegrationsPage() {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect('/login');
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('plan')
+    .eq('id', user.id)
+    .single();
+
+  const userPlan = profile?.plan ?? 'free';
+
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader
@@ -33,47 +48,51 @@ export default function IntegrationsPage() {
         subtitle="Connect TaskCraft AI with the tools you already use"
       />
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        {INTEGRATIONS.map((integration) => (
-          <div key={integration.name} className="tc-card p-5">
-            <div className="flex items-start justify-between gap-3">
-              <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${integration.iconBg}`}>
-                <Zap className={`h-5 w-5 ${integration.iconColor}`} />
+      {userPlan === 'free' ? (
+        <UpgradePrompt feature="integrations" requiredPlan="solo" />
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2">
+          {INTEGRATIONS.map((integration) => (
+            <div key={integration.name} className="tc-card p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${integration.iconBg}`}>
+                  <Zap className={`h-5 w-5 ${integration.iconColor}`} />
+                </div>
+                {integration.connected && (
+                  <CheckCircle2 className="h-5 w-5 text-primary shrink-0" />
+                )}
               </div>
-              {integration.connected && (
-                <CheckCircle2 className="h-5 w-5 text-primary shrink-0" />
-              )}
+
+              <p className="mt-3 text-sm font-semibold">{integration.name}</p>
+              <span className="inline-block rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                {integration.badge}
+              </span>
+
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                {integration.description}
+              </p>
+
+              <div className="mt-4 flex gap-2">
+                {integration.connected ? (
+                  <button className="tc-btn-secondary text-xs border-destructive/30 text-destructive">
+                    Disconnect
+                  </button>
+                ) : (
+                  <button className="tc-btn-primary text-xs">Connect</button>
+                )}
+                <a
+                  href={integration.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="tc-btn-secondary inline-flex items-center gap-1.5 text-xs"
+                >
+                  Learn more <ExternalLink className="h-3 w-3" />
+                </a>
+              </div>
             </div>
-
-            <p className="mt-3 text-sm font-semibold">{integration.name}</p>
-            <span className="inline-block rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-900/30 dark:text-green-400">
-              {integration.badge}
-            </span>
-
-            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-              {integration.description}
-            </p>
-
-            <div className="mt-4 flex gap-2">
-              {integration.connected ? (
-                <button className="tc-btn-secondary text-xs border-destructive/30 text-destructive">
-                  Disconnect
-                </button>
-              ) : (
-                <button className="tc-btn-primary text-xs">Connect</button>
-              )}
-              <a
-                href={integration.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="tc-btn-secondary inline-flex items-center gap-1.5 text-xs"
-              >
-                Learn more <ExternalLink className="h-3 w-3" />
-              </a>
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

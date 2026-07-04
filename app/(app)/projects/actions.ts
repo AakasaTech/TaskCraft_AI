@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
 import type { ProjectStatus, ProjectMemberRole } from '@/lib/types';
+import { PLANS } from '@/lib/constants';
 
 export interface ProjectInput {
   name: string;
@@ -40,6 +41,31 @@ export async function createProject(input: ProjectInput) {
 
   const workspaceId = await getWorkspaceId(user.id);
   if (!workspaceId) return { error: 'No workspace found.' };
+
+  // Enforce plan project limit
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('plan')
+    .eq('id', user.id)
+    .single();
+
+  const planKey = (profile?.plan ?? 'free') as keyof typeof PLANS;
+  const limit   = PLANS[planKey].max_projects;
+
+  if (limit !== -1) {
+    const { count } = await supabase
+      .from('projects')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId)
+      .neq('status', 'archived');
+
+    if ((count ?? 0) >= limit) {
+      return {
+        error: `Your ${PLANS[planKey].name} plan allows up to ${limit} active project${limit !== 1 ? 's' : ''}. Archive a project or upgrade your plan to create more.`,
+        limitReached: true,
+      };
+    }
+  }
 
   const { data, error } = await supabase
     .from('projects')

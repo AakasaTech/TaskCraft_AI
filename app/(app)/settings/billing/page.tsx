@@ -1,104 +1,86 @@
 import type { Metadata } from 'next';
 import { createClient } from '@/lib/supabase/server';
-import { ArrowRight, CreditCard } from 'lucide-react';
-import Link from 'next/link';
-import { PLANS } from '@/lib/constants';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { SettingsSection } from '@/components/shared/SettingsSection';
-import { EmptyState } from '@/components/shared/EmptyState';
+import { BillingClient } from './_components/BillingClient';
+import type { Plan } from '@/lib/types';
 
 export const metadata: Metadata = { title: 'Billing' };
 
 export default async function BillingPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('plan, plan_expires_at')
-    .eq('id', user!.id)
-    .single();
+  if (!user) return null;
 
-  const currentPlan = (profile?.plan ?? 'free') as keyof typeof PLANS;
-  const plan = PLANS[currentPlan];
+  const [profileRes, subRes] = await Promise.all([
+    supabase
+      .from('profiles')
+      .select('plan, plan_expires_at')
+      .eq('id', user.id)
+      .single(),
+
+    supabase
+      .from('subscriptions')
+      .select('paypal_subscription_id, status, current_period_end, cancelled_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+
+  const currentPlan    = (profileRes.data?.plan ?? 'free') as Plan;
+  const planExpiresAt  = profileRes.data?.plan_expires_at ?? null;
+  const subscription   = subRes.data;
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader title="Billing" subtitle="Manage your subscription and invoices" />
+      <PageHeader
+        title="Billing"
+        subtitle="Manage your subscription and payment method"
+      />
 
-      {/* Current plan card */}
-      <SettingsSection title="Current Plan" description="Your active subscription.">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold">
-                {plan.price_monthly === 0 ? 'Free' : `$${plan.price_monthly}`}
-              </span>
-              {plan.price_monthly > 0 && (
-                <span className="text-sm text-muted-foreground">/month</span>
-              )}
-            </div>
-            <div className="mt-1 flex items-center gap-2">
-              <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary capitalize">
-                {plan.name} Plan
-              </span>
-              {profile?.plan_expires_at && (
-                <span className="text-xs text-muted-foreground">
-                  · Renews {new Date(profile.plan_expires_at).toLocaleDateString()}
-                </span>
-              )}
-            </div>
-          </div>
-          {currentPlan !== 'free' && (
-            <button className="tc-btn-secondary border-destructive/30 text-destructive hover:bg-destructive/5 text-xs">
-              Cancel subscription
-            </button>
-          )}
-        </div>
+      <SettingsSection
+        title="Plan & Subscription"
+        description="Your current plan and upgrade options."
+      >
+        <BillingClient
+          currentPlan={currentPlan}
+          planExpiresAt={planExpiresAt}
+          subscriptionId={subscription?.paypal_subscription_id ?? null}
+          subscriptionStatus={subscription?.status ?? null}
+        />
       </SettingsSection>
 
-      {/* Upgrade options */}
-      {currentPlan !== 'team' && (
-        <div>
-          <p className="mb-3 text-sm font-semibold">Available Upgrades</p>
-          <div className="grid gap-4 sm:grid-cols-2">
-            {(['solo', 'team'] as const)
-              .filter((p) => p !== currentPlan)
-              .map((key) => {
-                const p = PLANS[key];
-                return (
-                  <div
-                    key={key}
-                    className={`tc-card p-5 ${key === 'team' ? 'border-primary/30' : ''}`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <p className="font-semibold">{p.name}</p>
-                      <span className="text-xl font-bold text-primary">
-                        ${p.price_monthly}
-                        <span className="text-xs font-normal text-muted-foreground">/mo</span>
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-xs text-muted-foreground">or ${p.price_yearly}/year</p>
-                    <Link
-                      href="/pricing"
-                      className="tc-btn-primary mt-4 flex w-full justify-center"
-                    >
-                      Upgrade to {p.name}
-                      <ArrowRight className="h-3.5 w-3.5" />
-                    </Link>
-                  </div>
-                );
-              })}
-          </div>
+      {/* Billing FAQ */}
+      <SettingsSection
+        title="Billing FAQ"
+        description="Common questions about billing and plans."
+      >
+        <div className="space-y-4 text-sm text-muted-foreground">
+          {[
+            {
+              q: 'How does the free trial work?',
+              a: 'All paid plans include a 14-day free trial. You won\'t be charged until the trial ends. You can cancel at any time during the trial.',
+            },
+            {
+              q: 'Can I switch plans?',
+              a: 'Yes. Upgrade at any time and your new plan activates immediately. To downgrade, cancel your current subscription — when it expires, your account reverts to Free.',
+            },
+            {
+              q: 'What payment methods are accepted?',
+              a: 'We accept all major cards and PayPal balance through the PayPal checkout. No credit card required to start.',
+            },
+            {
+              q: 'What happens to my data if I downgrade?',
+              a: 'Your data is preserved. If you have more than 3 projects, they\'ll remain accessible in read-only mode until you upgrade again.',
+            },
+          ].map(({ q, a }) => (
+            <div key={q}>
+              <p className="font-semibold text-foreground">{q}</p>
+              <p className="mt-0.5">{a}</p>
+            </div>
+          ))}
         </div>
-      )}
-
-      {/* Billing history */}
-      <SettingsSection title="Billing History" description="Past invoices and receipts.">
-        <EmptyState
-          icon={CreditCard}
-          title="No invoices yet"
-          description="Your billing history will appear here once you upgrade to a paid plan."
-        />
       </SettingsSection>
     </div>
   );

@@ -3,70 +3,32 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { Check } from 'lucide-react';
-import { PLANS } from '@/lib/constants';
+import { PLANS, PLAN_FEATURES } from '@/lib/constants';
 
 const PLAN_DATA = [
   {
-    key:         'free',
-    name:        PLANS.free.name,
-    price:       PLANS.free.price_monthly,
-    yearlyPrice: PLANS.free.price_yearly,
-    yearlySavings: null,
-    description: 'Perfect for getting started.',
-    features: [
-      'Up to 3 projects',
-      'Up to 50 tasks',
-      'Basic time tracking',
-      'Reports (7-day history)',
-      'BillCraft AI integration',
-    ],
-    cta:         'Get started free',
-    ctaHref:     '/register',
-    highlighted: false,
-    badge:       null,
+    key:          'free'  as const,
+    description:  'Get started for free. No credit card required.',
+    cta:          'Get started free',
+    ctaHref:      '/register',
+    highlighted:  false,
+    badge:        null,
   },
   {
-    key:         'solo',
-    name:        PLANS.solo.name,
-    price:       PLANS.solo.price_monthly,
-    yearlyPrice: PLANS.solo.price_yearly,
-    yearlySavings: 19,
-    description: 'For freelancers and independent professionals.',
-    features: [
-      'Unlimited projects & tasks',
-      'Advanced time tracking',
-      'Billable hours & custom rates',
-      'Full reports & CSV exports',
-      'BillCraft AI integration',
-      'SupportCraft AI integration',
-      'Priority support',
-    ],
-    cta:         'Start Solo plan',
-    ctaHref:     '/register?plan=solo',
-    highlighted: true,
-    badge:       'Most popular',
+    key:          'solo'  as const,
+    description:  'For freelancers and independent professionals.',
+    cta:          'Start Solo plan',
+    ctaHref:      '/register?plan=solo',
+    highlighted:  true,
+    badge:        'Most popular',
   },
   {
-    key:         'team',
-    name:        PLANS.team.name,
-    price:       PLANS.team.price_monthly,
-    yearlyPrice: PLANS.team.price_yearly,
-    yearlySavings: 39,
-    description: 'For growing teams that need to collaborate.',
-    features: [
-      'Everything in Solo',
-      'Team workspaces',
-      'Unlimited team members',
-      'Roles & permissions',
-      'Task assignments',
-      'Team time reports',
-      'Shared project views',
-      'Admin panel',
-    ],
-    cta:         'Start Team plan',
-    ctaHref:     '/register?plan=team',
-    highlighted: false,
-    badge:       null,
+    key:          'team'  as const,
+    description:  'For growing teams that need to collaborate.',
+    cta:          'Start Team plan',
+    ctaHref:      '/register?plan=team',
+    highlighted:  false,
+    badge:        null,
   },
 ] as const;
 
@@ -108,8 +70,11 @@ function BillingToggle({ yearly, onChange }: { yearly: boolean; onChange: (v: bo
 }
 
 function PlanCard({ plan, yearly }: { plan: typeof PLAN_DATA[number]; yearly: boolean }) {
-  const price  = yearly && plan.yearlyPrice > 0 ? plan.yearlyPrice : plan.price;
+  const meta   = PLANS[plan.key];
+  const price  = yearly && meta.price_yearly > 0 ? meta.price_yearly : meta.price_monthly;
   const period = yearly ? '/year' : '/month';
+  const isFree = meta.price_monthly === 0;
+  const savings = meta.price_monthly * 12 - meta.price_yearly;
 
   return (
     <div
@@ -120,11 +85,10 @@ function PlanCard({ plan, yearly }: { plan: typeof PLAN_DATA[number]; yearly: bo
       }`}
       style={plan.highlighted ? {
         borderColor: 'hsl(var(--primary))',
-        borderWidth:  '2px',
-        background:   'linear-gradient(160deg, hsl(var(--primary) / 0.04) 0%, transparent 60%)',
+        borderWidth: '2px',
+        background:  'linear-gradient(160deg, hsl(var(--primary) / 0.04) 0%, transparent 60%)',
       } : undefined}
     >
-      {/* Badge */}
       {plan.badge && (
         <div
           className={`absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full px-3.5 py-0.5 text-[11px] font-semibold ${
@@ -137,17 +101,23 @@ function PlanCard({ plan, yearly }: { plan: typeof PLAN_DATA[number]; yearly: bo
         </div>
       )}
 
-      {/* Name */}
-      <h3 className="text-base font-bold">{plan.name}</h3>
+      <h3 className="text-base font-bold">{meta.name}</h3>
 
-      {/* Price */}
       <div className="mt-3 flex items-baseline gap-1">
-        <span className="text-3xl font-bold tabular-nums">${price}</span>
-        <span className="text-sm text-muted-foreground">{period}</span>
+        {isFree ? (
+          <span className="text-3xl font-bold">Free</span>
+        ) : (
+          <>
+            <span className="text-3xl font-bold tabular-nums">${price}</span>
+            <span className="text-sm text-muted-foreground">{period}</span>
+          </>
+        )}
       </div>
 
-      {yearly && plan.yearlySavings && (
-        <p className="mt-1 text-xs text-muted-foreground">Save ${plan.yearlySavings}/year</p>
+      {yearly && !isFree && savings > 0 && (
+        <p className="mt-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+          Save ${savings}/year vs monthly
+        </p>
       )}
 
       <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{plan.description}</p>
@@ -155,7 +125,7 @@ function PlanCard({ plan, yearly }: { plan: typeof PLAN_DATA[number]; yearly: bo
       <hr className="my-5 border-border" />
 
       <ul className="flex-1 space-y-2.5">
-        {plan.features.map((f) => (
+        {PLAN_FEATURES[plan.key].map((f) => (
           <li key={f} className="flex items-start gap-2 text-xs">
             <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" strokeWidth={2.5} />
             <span className="text-foreground/80">{f}</span>
@@ -204,7 +174,7 @@ export function PricingSection() {
         </div>
 
         <p className="mt-10 text-center text-xs text-muted-foreground">
-          Prices in USD. All paid plans include a 14-day free trial. No credit card required to start. Cancel anytime.
+          Prices in USD · All paid plans include a 14-day free trial · No credit card required to start · Billed via PayPal · Cancel anytime
         </p>
 
       </div>

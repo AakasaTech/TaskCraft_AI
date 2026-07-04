@@ -1,39 +1,54 @@
 import type { Metadata } from 'next';
-import { Switch } from '@/components/ui/switch';
-import { Label } from '@/components/ui/label';
-import { SettingsSection } from '@/components/shared/SettingsSection';
+import { redirect } from 'next/navigation';
+import { createClient } from '@/lib/supabase/server';
+import { NotificationsClient } from './_components/NotificationsClient';
+import type { NotificationPrefs } from '../actions';
 
-export const metadata: Metadata = { title: 'Notifications' };
+export const metadata: Metadata = { title: 'Notification Settings' };
 
-const NOTIFS = [
-  { id: 'task_assigned',   label: 'Task assigned to me',   sub: 'When someone assigns a task to you' },
-  { id: 'task_due',        label: 'Task due soon',          sub: 'Reminder 24 hours before a task is due' },
-  { id: 'project_updates', label: 'Project updates',        sub: 'When a project status changes' },
-  { id: 'billing',         label: 'Billing notifications',  sub: 'Receipts, renewals, and payment issues' },
-  { id: 'weekly_summary',  label: 'Weekly summary email',   sub: 'A weekly digest of your productivity' },
-];
+const DEFAULT_PREFS: NotificationPrefs = {
+  task_assigned:   true,
+  task_due:        true,
+  project_updates: false,
+  billing:         true,
+  weekly_summary:  true,
+};
 
-export default function NotificationsPage() {
-  return (
-    <SettingsSection
-      title="Email Notifications"
-      description="Choose which notifications you want to receive by email."
-      footer={<button className="tc-btn-primary">Save preferences</button>}
-    >
-      <div className="space-y-5">
-        {NOTIFS.map((n, i) => (
-          <div key={n.id}>
-            {i > 0 && <div className="mb-5 h-px bg-border" />}
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <Label htmlFor={n.id} className="cursor-pointer text-sm font-medium">{n.label}</Label>
-                <p className="mt-0.5 text-xs text-muted-foreground">{n.sub}</p>
-              </div>
-              <Switch id={n.id} defaultChecked />
-            </div>
-          </div>
-        ))}
-      </div>
-    </SettingsSection>
-  );
+export default async function NotificationsPage() {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect('/login');
+
+  const { data: member } = await supabase
+    .from('workspace_members')
+    .select('workspace_id')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  let prefs = { ...DEFAULT_PREFS };
+
+  if (member?.workspace_id) {
+    const { data: workspace } = await supabase
+      .from('workspaces')
+      .select('settings')
+      .eq('id', member.workspace_id)
+      .single();
+
+    const settings    = (workspace?.settings ?? {}) as Record<string, unknown>;
+    const userPrefs   = (settings.user_prefs  ?? {}) as Record<string, unknown>;
+    const userEntry   = (userPrefs[user.id]   ?? {}) as Record<string, unknown>;
+    const saved       = userEntry.notifications as Partial<NotificationPrefs> | undefined;
+
+    if (saved) {
+      prefs = {
+        task_assigned:   saved.task_assigned   ?? DEFAULT_PREFS.task_assigned,
+        task_due:        saved.task_due        ?? DEFAULT_PREFS.task_due,
+        project_updates: saved.project_updates ?? DEFAULT_PREFS.project_updates,
+        billing:         saved.billing         ?? DEFAULT_PREFS.billing,
+        weekly_summary:  saved.weekly_summary  ?? DEFAULT_PREFS.weekly_summary,
+      };
+    }
+  }
+
+  return <NotificationsClient initialPrefs={prefs} />;
 }

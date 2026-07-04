@@ -4,10 +4,13 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 
 const TABS = [
-  { href: '/settings',               label: 'Profile' },
-  { href: '/settings/notifications', label: 'Notifications' },
-  { href: '/settings/billing',       label: 'Billing' },
-  { href: '/settings/security',      label: 'Security' },
+  { href: '/settings',                label: 'Profile' },
+  { href: '/settings/workspace',      label: 'Workspace' },
+  { href: '/settings/notifications',  label: 'Notifications' },
+  { href: '/settings/time-tracking',  label: 'Time Tracking' },
+  { href: '/settings/billing',        label: 'Billing' },
+  { href: '/settings/security',       label: 'Security' },
+  { href: '/settings/data-export',    label: 'Data Export' },
 ];
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
