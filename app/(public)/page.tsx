@@ -7,7 +7,10 @@ import {
 import { PricingSection } from '@/components/shared/PricingSection';
 
 export const metadata: Metadata = {
-  title: 'TaskCraft AI | Plan smarter. Track faster. Invoice instantly.',
+  title: 'TaskCraft AI | Project Management, Time Tracking & Invoicing',
+  description:
+    'TaskCraft AI is a project management and time tracking app for freelancers and teams. ' +
+    'Track tasks, log billable hours, and send invoices via BillCraft AI — all in one place.',
 };
 
 const features = [
@@ -259,6 +262,20 @@ export default function LandingPage() {
 
       {/* ── Pricing ─────────────────────────────────────────────────────────────── */}
       <PricingSection />
+
+      {/* ── About ───────────────────────────────────────────────────────────────── */}
+      <section id="about" className="border-t border-border px-6 py-16">
+        <div className="mx-auto max-w-3xl text-center">
+          <h2 className="text-2xl font-bold tracking-tight">About TaskCraft AI</h2>
+          <p className="mt-4 text-muted-foreground leading-relaxed">
+            TaskCraft AI is a project and task management application that helps freelancers and
+            teams organise work, track billable time, and generate invoices — all in one place.
+            You can create an account with your email address or sign in with Google. When you
+            use Google Sign-In, TaskCraft AI uses your name and email address only to create and
+            identify your account. No other Google data is accessed or stored.
+          </p>
+        </div>
+      </section>
 
       {/* ── CTA ─────────────────────────────────────────────────────────────────── */}
       <section className="border-t border-border bg-muted/30 px-6 py-20 text-center">

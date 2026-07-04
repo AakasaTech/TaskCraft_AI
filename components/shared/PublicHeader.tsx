@@ -5,8 +5,9 @@ export function PublicHeader() {
   return (
     <header className="sticky top-0 z-50 border-b border-border/50 bg-background/90 backdrop-blur-md">
       <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-        <Link href="/">
-          <img src="/logo.png" alt="TaskCraft AI" className="h-[88px] w-auto" />
+        <Link href="/" className="flex items-center gap-3">
+          <img src="/logo.png" alt="" className="h-[88px] w-auto" aria-hidden="true" />
+          <span className="text-lg font-bold tracking-tight">TaskCraft AI</span>
         </Link>
 
         <div className="hidden items-center gap-8 md:flex">
