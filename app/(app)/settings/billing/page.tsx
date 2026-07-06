@@ -21,7 +21,7 @@ export default async function BillingPage() {
 
     supabase
       .from('subscriptions')
-      .select('paypal_subscription_id, status, current_period_end, cancelled_at')
+      .select('paypal_subscription_id, status, current_period_end, cancelled_at, trial_ends_at')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(1)
@@ -44,8 +44,10 @@ export default async function BillingPage() {
         description="Your current plan and upgrade options."
       >
         <BillingClient
+          userId={user.id}
           currentPlan={currentPlan}
           planExpiresAt={planExpiresAt}
+          trialEndsAt={subscription?.trial_ends_at ?? null}
           subscriptionId={subscription?.paypal_subscription_id ?? null}
           subscriptionStatus={subscription?.status ?? null}
         />

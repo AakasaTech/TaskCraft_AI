@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Check, Loader2, RefreshCw } from 'lucide-react';
+import { Check, Loader2, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 import { PLANS, PLAN_FEATURES } from '@/lib/constants';
 import type { Plan } from '@/lib/types';
@@ -20,15 +20,21 @@ const PAYPAL_PLAN_IDS = {
   team_yearly:  process.env.NEXT_PUBLIC_PAYPAL_PLAN_ID_TEAM_YEARLY  ?? '',
 };
 
+function daysUntil(iso: string): number {
+  const diff = new Date(iso).getTime() - Date.now();
+  return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+}
+
 // ── PayPal button for a single plan+billing combo ─────────────────────────────
 
 interface PayPalBtnProps {
   planKey: 'solo' | 'team';
   planId:  string;
   label:   string;
+  userId:  string;
 }
 
-function PayPalButton({ planKey, planId, label }: PayPalBtnProps) {
+function PayPalButton({ planKey, planId, label, userId }: PayPalBtnProps) {
   const containerId = `paypal-btn-${planKey}-${planId.slice(-6) || 'dev'}`;
   const rendered    = useRef(false);
   const [loading, setLoading]   = useState(true);
@@ -47,8 +53,8 @@ function PayPalButton({ planKey, planId, label }: PayPalBtnProps) {
         label:  'subscribe',
         height: 40,
       },
-      createSubscription: (_data: unknown, actions: { subscription: { create: (opts: { plan_id: string }) => Promise<string> } }) => {
-        return actions.subscription.create({ plan_id: planId });
+      createSubscription: (_data: unknown, actions: { subscription: { create: (opts: { plan_id: string; custom_id?: string }) => Promise<string> } }) => {
+        return actions.subscription.create({ plan_id: planId, custom_id: userId });
       },
       onApprove: async (data: { subscriptionID: string }) => {
         setApproved(true);
@@ -58,7 +64,7 @@ function PayPalButton({ planKey, planId, label }: PayPalBtnProps) {
             headers: { 'Content-Type': 'application/json' },
             body:    JSON.stringify({ subscriptionID: data.subscriptionID, planKey }),
           });
-          toast.success('Subscription activated! Refreshing your plan…');
+          toast.success('Trial started! Refreshing your plan…');
           setTimeout(() => window.location.reload(), 1500);
         } catch {
           toast.error('Subscription recorded — it may take a moment to activate.');
@@ -70,7 +76,7 @@ function PayPalButton({ planKey, planId, label }: PayPalBtnProps) {
         setLoading(true);
       },
     }).render(`#${containerId}`);
-  }, [containerId, planId, planKey]);
+  }, [containerId, planId, planKey, userId]);
 
   useEffect(() => {
     if (window.paypal) {
@@ -112,7 +118,7 @@ function PayPalButton({ planKey, planId, label }: PayPalBtnProps) {
 
 // ── Upgrade card ──────────────────────────────────────────────────────────────
 
-function UpgradeCard({ planKey, yearly }: { planKey: 'solo' | 'team'; yearly: boolean }) {
+function UpgradeCard({ planKey, yearly, userId }: { planKey: 'solo' | 'team'; yearly: boolean; userId: string }) {
   const meta   = PLANS[planKey];
   const planId = yearly ? PAYPAL_PLAN_IDS[`${planKey}_yearly`] : PAYPAL_PLAN_IDS[`${planKey}_monthly`];
   const price  = yearly ? meta.price_yearly  : meta.price_monthly;
@@ -123,7 +129,12 @@ function UpgradeCard({ planKey, yearly }: { planKey: 'solo' | 'team'; yearly: bo
     <div className={`tc-card p-5 ${planKey === 'team' ? 'border-violet-300/40 dark:border-violet-700/30' : 'border-primary/30'}`}>
       <div className="flex items-start justify-between gap-3 mb-3">
         <div>
-          <p className="font-bold text-sm">{meta.name} plan</p>
+          <div className="flex items-center gap-2">
+            <p className="font-bold text-sm">{meta.name} plan</p>
+            <span className="rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap">
+              14-day free trial
+            </span>
+          </div>
           <div className="flex items-baseline gap-1 mt-0.5">
             <span className="text-2xl font-bold tabular-nums text-primary">${price}</span>
             <span className="text-xs text-muted-foreground">{period}</span>
@@ -151,7 +162,12 @@ function UpgradeCard({ planKey, yearly }: { planKey: 'solo' | 'team'; yearly: bo
       </ul>
 
       {planId ? (
-        <PayPalButton planKey={planKey} planId={planId} label={`Subscribe to ${meta.name}`} />
+        <>
+          <PayPalButton planKey={planKey} planId={planId} label={`Start 14-day free trial`} userId={userId} />
+          <p className="mt-2 text-center text-[10px] text-muted-foreground">
+            No charge for 14 days · Cancel anytime
+          </p>
+        </>
       ) : (
         <p className="text-xs text-muted-foreground text-center py-2">
           PayPal plan ID not configured. Set NEXT_PUBLIC_PAYPAL_PLAN_ID_{planKey.toUpperCase()}_{yearly ? 'YEARLY' : 'MONTHLY'} in your environment.
@@ -164,18 +180,22 @@ function UpgradeCard({ planKey, yearly }: { planKey: 'solo' | 'team'; yearly: bo
 // ── Main billing client component ─────────────────────────────────────────────
 
 interface BillingClientProps {
+  userId: string;
   currentPlan: Plan;
   planExpiresAt: string | null;
+  trialEndsAt: string | null;
   subscriptionId: string | null;
   subscriptionStatus: string | null;
 }
 
-export function BillingClient({ currentPlan, planExpiresAt, subscriptionId, subscriptionStatus }: BillingClientProps) {
+export function BillingClient({ userId, currentPlan, planExpiresAt, trialEndsAt, subscriptionId, subscriptionStatus }: BillingClientProps) {
   const [yearly, setYearly]   = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
-  const isPaid = currentPlan !== 'free';
-  const isTeam = currentPlan === 'team';
+  const isPaid      = currentPlan !== 'free';
+  const isTeam      = currentPlan === 'team';
+  const isTrialing  = subscriptionStatus === 'trialing';
+  const trialDaysLeft = trialEndsAt ? daysUntil(trialEndsAt) : 0;
 
   async function handleCancel() {
     if (!confirm('Cancel your subscription? Your plan stays active until the current period ends, then reverts to Free.')) return;
@@ -202,14 +222,14 @@ export function BillingClient({ currentPlan, planExpiresAt, subscriptionId, subs
       <div className="tc-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-bold text-lg">{PLANS[currentPlan].name} Plan</h3>
               <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
-                currentPlan === 'team' ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300'
+                currentPlan === 'team'  ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300'
                 : currentPlan === 'solo' ? 'bg-primary/10 text-primary'
                 : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
               }`}>
-                {isPaid ? (subscriptionStatus ?? 'active') : 'free'}
+                {isPaid ? (isTrialing ? 'trial' : subscriptionStatus ?? 'active') : 'free'}
               </span>
             </div>
 
@@ -226,7 +246,7 @@ export function BillingClient({ currentPlan, planExpiresAt, subscriptionId, subs
               )}
             </div>
 
-            {planExpiresAt && (
+            {planExpiresAt && !isTrialing && (
               <p className="mt-1 text-xs text-muted-foreground">
                 {subscriptionStatus === 'cancelled' ? 'Access ends' : 'Renews'}{' '}
                 {new Date(planExpiresAt).toLocaleDateString('en-US', { dateStyle: 'medium' })}
@@ -245,6 +265,23 @@ export function BillingClient({ currentPlan, planExpiresAt, subscriptionId, subs
           )}
         </div>
 
+        {/* Trial countdown banner */}
+        {isTrialing && trialEndsAt && (
+          <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-800 dark:bg-amber-900/20">
+            <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+            <div>
+              <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+                Free Trial · {trialDaysLeft} {trialDaysLeft === 1 ? 'day' : 'days'} remaining
+              </p>
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+                No charge until{' '}
+                {new Date(trialEndsAt).toLocaleDateString('en-US', { dateStyle: 'medium' })}.
+                Cancel anytime before then.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Current plan features */}
         <ul className="mt-4 grid gap-1.5 sm:grid-cols-2">
           {PLAN_FEATURES[currentPlan].map((f) => (
@@ -261,7 +298,7 @@ export function BillingClient({ currentPlan, planExpiresAt, subscriptionId, subs
         <div>
           <div className="flex items-center justify-between mb-4">
             <p className="text-sm font-bold">
-              {currentPlan === 'free' ? 'Upgrade your plan' : 'Upgrade to Team'}
+              {currentPlan === 'free' ? 'Start your free trial' : 'Upgrade to Team'}
             </p>
 
             {/* Billing toggle */}
@@ -297,8 +334,8 @@ export function BillingClient({ currentPlan, planExpiresAt, subscriptionId, subs
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            {currentPlan === 'free' && <UpgradeCard planKey="solo" yearly={yearly} />}
-            <UpgradeCard planKey="team" yearly={yearly} />
+            {currentPlan === 'free' && <UpgradeCard planKey="solo" yearly={yearly} userId={userId} />}
+            <UpgradeCard planKey="team" yearly={yearly} userId={userId} />
           </div>
         </div>
       )}

@@ -1,10 +1,12 @@
 import https from 'node:https';
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
 import type { Plan } from '@/lib/types';
 
 export const runtime = 'nodejs';
 
 const VALID_PLANS: Plan[] = ['solo', 'team'];
+const TRIAL_DAYS = 14;
 
 async function getAccessToken(): Promise<string> {
   const clientId     = process.env.NEXT_PUBLIC_PAYPAL_CLIENT_ID ?? '';
@@ -27,7 +29,15 @@ async function getAccessToken(): Promise<string> {
   });
 }
 
-async function getSubscription(subscriptionId: string, token: string): Promise<{ status: string; plan_id: string } | null> {
+interface PayPalSubscription {
+  status:       string;
+  plan_id:      string;
+  billing_info?: {
+    next_billing_time?: string;
+  };
+}
+
+async function getSubscription(subscriptionId: string, token: string): Promise<PayPalSubscription | null> {
   const apiBase = process.env.PAYPAL_API_URL ?? 'https://api-m.paypal.com';
   const url     = new URL(`/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}`, apiBase);
 
@@ -66,6 +76,11 @@ export async function POST(req: Request) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
+    // Trial end: use PayPal's next_billing_time if available, else now + TRIAL_DAYS
+    const now          = new Date();
+    const defaultTrial = new Date(now.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    let trialEndsAt    = defaultTrial;
+
     // Verify the subscription with PayPal before storing it
     const paypalPlansConfigured = !!(
       process.env.PAYPAL_PLAN_ID_SOLO_MONTHLY || process.env.PAYPAL_PLAN_ID_TEAM_MONTHLY
@@ -80,26 +95,31 @@ export async function POST(req: Request) {
           return Response.json({ error: 'Could not verify subscription with PayPal' }, { status: 400 });
         }
 
-        // Verify subscription is in a valid state (APPROVAL_PENDING before capture, ACTIVE after)
         const validStatuses = ['APPROVAL_PENDING', 'APPROVED', 'ACTIVE'];
         if (!validStatuses.includes(sub.status?.toUpperCase())) {
           console.error('[paypal/subscription] invalid status:', sub.status);
           return Response.json({ error: 'Subscription is not active' }, { status: 400 });
         }
 
-        // Verify the plan_id matches the claimed planKey
         const resolvedPlan = PLAN_ID_PLAN_MAP[sub.plan_id];
         if (resolvedPlan && resolvedPlan !== planKey) {
           console.error('[paypal/subscription] plan mismatch', sub.plan_id, planKey);
           return Response.json({ error: 'Plan mismatch' }, { status: 400 });
         }
+
+        // Use PayPal's next_billing_time as the trial end if available
+        if (sub.billing_info?.next_billing_time) {
+          const paypalDate = new Date(sub.billing_info.next_billing_time);
+          if (!isNaN(paypalDate.getTime())) trialEndsAt = paypalDate;
+        }
       } catch (verifyErr) {
-        // Log but don't block — PayPal webhook will confirm asynchronously
         console.error('[paypal/subscription] verification warning:', verifyErr);
       }
     }
 
-    // Upsert subscription record
+    const trialEndsAtIso = trialEndsAt.toISOString();
+
+    // Upsert subscription record with trial dates
     const { data: existing } = await supabase
       .from('subscriptions')
       .select('id')
@@ -108,26 +128,43 @@ export async function POST(req: Request) {
       .limit(1)
       .maybeSingle();
 
-    const { error } = existing
+    const subUpsert = existing
       ? await supabase.from('subscriptions').update({
           plan_id:                planKey,
           status:                 'trialing',
           paypal_subscription_id: subscriptionID,
-          updated_at:             new Date().toISOString(),
+          trial_ends_at:          trialEndsAtIso,
+          current_period_start:   now.toISOString(),
+          current_period_end:     trialEndsAtIso,
+          updated_at:             now.toISOString(),
         }).eq('id', existing.id)
       : await supabase.from('subscriptions').insert({
           user_id:                user.id,
           plan_id:                planKey,
           status:                 'trialing',
           paypal_subscription_id: subscriptionID,
+          trial_ends_at:          trialEndsAtIso,
+          current_period_start:   now.toISOString(),
+          current_period_end:     trialEndsAtIso,
         });
 
-    if (error) {
-      console.error('[paypal/subscription] upsert error:', error.message);
-      return Response.json({ error: error.message }, { status: 500 });
+    if (subUpsert.error) {
+      console.error('[paypal/subscription] upsert error:', subUpsert.error.message);
+      return Response.json({ error: subUpsert.error.message }, { status: 500 });
     }
 
-    return Response.json({ ok: true });
+    // Grant plan access immediately — don't wait for the webhook
+    const admin = createAdminClient();
+    const { error: profileErr } = await admin
+      .from('profiles')
+      .update({ plan: planKey, plan_expires_at: trialEndsAtIso })
+      .eq('id', user.id);
+
+    if (profileErr) {
+      console.error('[paypal/subscription] profile update error:', profileErr.message);
+    }
+
+    return Response.json({ ok: true, trialEndsAt: trialEndsAtIso });
   } catch (err) {
     console.error('[paypal/subscription] unexpected error:', err);
     return Response.json({ error: 'Internal server error' }, { status: 500 });
