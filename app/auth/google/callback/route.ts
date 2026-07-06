@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 
 export const runtime = 'nodejs'
 
@@ -11,10 +12,9 @@ export async function GET(request: NextRequest) {
 
   const base = (process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000').replace(/\/$/, '')
 
-  // Read & clear one-time cookies
+  // Read one-time cookies
   const storedState  = request.cookies.get('g_oauth_state')?.value
   const codeVerifier = request.cookies.get('g_oauth_verifier')?.value
-  const rawNonce     = request.cookies.get('g_oauth_nonce')?.value
   const next         = request.cookies.get('g_oauth_next')?.value ?? '/dashboard'
 
   const clearCookies = (res: NextResponse) => {
@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
 
   if (error) return loginError('Google sign-in was cancelled.')
 
-  if (!code || !state || !storedState || !codeVerifier || !rawNonce) {
+  if (!code || !state || !storedState || !codeVerifier) {
     return loginError('Missing authentication parameters. Please try again.')
   }
 
@@ -64,21 +64,68 @@ export async function GET(request: NextRequest) {
 
   if (!id_token) return loginError('No identity token returned by Google.')
 
-  // Sign in to Supabase via Google ID token
-  const supabase = await createClient()
-  const { error: sbError } = await supabase.auth.signInWithIdToken({
-    provider: 'google',
-    token:    id_token,
-    nonce:    rawNonce,
+  // Verify token and extract user info via Google's tokeninfo endpoint
+  const infoRes = await fetch(
+    `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(id_token)}`
+  )
+
+  if (!infoRes.ok) {
+    console.error('[google/callback] tokeninfo request failed:', infoRes.status)
+    return loginError('Could not verify Google identity. Please try again.')
+  }
+
+  const info = await infoRes.json() as {
+    email?:            string
+    email_verified?:   string
+    name?:             string
+    picture?:          string
+    aud?:              string
+    error_description?: string
+  }
+
+  if (info.error_description) {
+    console.error('[google/callback] tokeninfo error:', info.error_description)
+    return loginError('Could not verify Google identity. Please try again.')
+  }
+
+  if (!info.email || info.email_verified !== 'true') {
+    return loginError('Google account email is not verified.')
+  }
+
+  if (info.aud !== process.env.GOOGLE_CLIENT_ID) {
+    console.error('[google/callback] aud mismatch:', info.aud)
+    return loginError('Invalid Google token. Please try again.')
+  }
+
+  // Create or sign in the user — no Supabase Google provider config required
+  const admin = createAdminClient()
+  const { data: linkData, error: linkError } = await admin.auth.admin.generateLink({
+    type:  'magiclink',
+    email: info.email,
+    options: {
+      data: {
+        full_name:  info.name  ?? null,
+        avatar_url: info.picture ?? null,
+      },
+    },
   })
 
-  if (sbError) {
-    console.error('[google/callback] supabase signInWithIdToken:', sbError.message)
+  if (linkError || !linkData?.properties?.hashed_token) {
+    console.error('[google/callback] generateLink error:', linkError?.message)
     return loginError('Could not complete sign-in. Please try again.')
   }
 
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return loginError('Authentication failed. Please try again.')
+  // Exchange the magic-link token for a real Supabase session
+  const supabase = await createClient()
+  const { error: otpError } = await supabase.auth.verifyOtp({
+    token_hash: linkData.properties.hashed_token,
+    type:       'magiclink',
+  })
+
+  if (otpError) {
+    console.error('[google/callback] verifyOtp error:', otpError.message)
+    return loginError('Could not complete sign-in. Please try again.')
+  }
 
   const res = NextResponse.redirect(new URL(next, base))
   return clearCookies(res)
