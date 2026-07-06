@@ -1,14 +1,44 @@
 import type { Metadata } from 'next';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Gift } from 'lucide-react';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { Badge } from '@/components/ui/badge';
+import { GrantFreepassForm } from './_components/GrantFreepassForm';
+import { RevokeFreepassButton } from './_components/RevokeFreepassButton';
+import type { Plan } from '@/lib/types';
 
 export const metadata: Metadata = { title: 'Freepass' };
 
-export default function FreePlanPage() {
+interface PaidUserRow {
+  id:              string;
+  email:           string;
+  full_name:       string | null;
+  plan:            Plan;
+  plan_expires_at: string | null;
+}
+
+function expiryLabel(expiresAt: string | null): { text: string; className: string } {
+  if (!expiresAt) return { text: 'Permanent', className: 'text-emerald-600 dark:text-emerald-400' };
+  const diff = new Date(expiresAt).getTime() - Date.now();
+  if (diff < 0) return { text: 'Expired', className: 'text-red-500' };
+  const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+  const date = new Date(expiresAt).toLocaleDateString('en-US', { dateStyle: 'medium' });
+  return {
+    text: `${date} (${days}d)`,
+    className: days < 14 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground',
+  };
+}
+
+export default async function FreepassPage() {
+  const supabase = createAdminClient();
+
+  const { data: paidUsers } = await supabase
+    .from('profiles')
+    .select('id, email, full_name, plan, plan_expires_at')
+    .neq('plan', 'free')
+    .order('plan_expires_at', { ascending: true, nullsFirst: false })
+    .limit(200);
+
+  const rows = (paidUsers ?? []) as PaidUserRow[];
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="page-header">
@@ -16,52 +46,57 @@ export default function FreePlanPage() {
         <p className="page-subtitle">Grant complimentary paid access to users</p>
       </div>
 
-      <Card className="max-w-md">
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Gift className="h-5 w-5 text-primary" />
-            <CardTitle className="text-base">Grant Plan Access</CardTitle>
+      <div className="grid gap-6 lg:grid-cols-2 items-start">
+        {/* Grant form */}
+        <GrantFreepassForm />
+
+        {/* Active paid users */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Paid users</h2>
+            <span className="text-xs text-muted-foreground">{rows.length} total</span>
           </div>
-          <CardDescription>Override a user&apos;s plan without requiring payment.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="email">User email</Label>
-            <Input id="email" type="email" placeholder="user@example.com" />
+
+          <div className="rounded-xl border border-border bg-card overflow-hidden">
+            {rows.length === 0 ? (
+              <p className="px-4 py-10 text-center text-sm text-muted-foreground">No paid users yet.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-muted-foreground">User</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-muted-foreground">Plan</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-muted-foreground hidden sm:table-cell">Expires</th>
+                    <th className="px-4 py-2.5 text-right text-xs font-semibold text-muted-foreground">Revoke</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((u) => {
+                    const expiry = expiryLabel(u.plan_expires_at);
+                    return (
+                      <tr key={u.id} className="border-b border-border/50 last:border-b-0 hover:bg-muted/30 transition-colors">
+                        <td className="px-4 py-2.5">
+                          <p className="font-medium leading-tight">{u.full_name ?? '—'}</p>
+                          <p className="text-[11px] text-muted-foreground">{u.email}</p>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <Badge variant="default" className="capitalize text-[11px]">{u.plan}</Badge>
+                        </td>
+                        <td className="px-4 py-2.5 hidden sm:table-cell">
+                          <span className={`text-xs ${expiry.className}`}>{expiry.text}</span>
+                        </td>
+                        <td className="px-4 py-2.5 text-right">
+                          <RevokeFreepassButton userId={u.id} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
           </div>
-          <div className="space-y-1.5">
-            <Label>Plan to grant</Label>
-            <Select>
-              <SelectTrigger>
-                <SelectValue placeholder="Select plan" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="solo">Solo</SelectItem>
-                <SelectItem value="team">Team</SelectItem>
-                <SelectItem value="free">Revert to Free</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Expires</Label>
-            <Select>
-              <SelectTrigger>
-                <SelectValue placeholder="Select duration" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="30">30 days</SelectItem>
-                <SelectItem value="90">90 days</SelectItem>
-                <SelectItem value="365">1 year</SelectItem>
-                <SelectItem value="0">Never (permanent)</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <Button className="w-full gap-2">
-            <Gift className="h-4 w-4" />
-            Grant access
-          </Button>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }
