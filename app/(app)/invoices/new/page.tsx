@@ -26,7 +26,7 @@ export default async function NewInvoicePage() {
     return (
       <div className="space-y-6 animate-fade-in">
         <PageHeader title="New Invoice" subtitle="Create an invoice from billable time" />
-        <UpgradePrompt feature="invoice creation" requiredPlan="solo" />
+        <UpgradePrompt feature="billcraft_sync" requiredPlan="solo" />
       </div>
     );
   }

@@ -50,7 +50,7 @@ export default async function InvoicesPage() {
     return (
       <div className="space-y-6 animate-fade-in">
         <PageHeader title="Invoices" subtitle="BillCraft AI invoice sync history" />
-        <UpgradePrompt feature="invoice sync" requiredPlan="solo" />
+        <UpgradePrompt feature="billcraft_sync" requiredPlan="solo" />
       </div>
     );
   }
