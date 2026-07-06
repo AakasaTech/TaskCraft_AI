@@ -87,12 +87,12 @@ export function BillCraftSettingsClient({
     setTestResult(null);
     startTest(async () => {
       const res = await testBillCraftConnection();
-      if (res?.ok) {
+      if ('ok' in res && res.ok) {
         setTestResult({ ok: true, name: res.workspace?.name });
         toast.success('Connection successful!');
       } else {
         setTestResult({ ok: false });
-        toast.error(res?.error ?? 'Connection failed');
+        toast.error('error' in res ? res.error : 'Connection failed');
       }
     });
   }
