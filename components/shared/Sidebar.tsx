@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard, FolderKanban, CheckSquare, Clock,
   CalendarDays, BarChart3, Users, Plug, CreditCard,
-  Settings, ChevronLeft, ChevronRight, LogOut, Sparkles, Lock,
+  Settings, ChevronLeft, ChevronRight, LogOut, Sparkles, Lock, Receipt, UsersRound,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
@@ -47,14 +47,16 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Insights',
     items: [
-      { href: '/ai',      label: 'AI Assistant', icon: Sparkles, minPlan: 'free' },
-      { href: '/reports', label: 'Reports',       icon: BarChart3, minPlan: 'solo' },
-      { href: '/clients', label: 'Clients',       icon: Users,     minPlan: 'solo' },
+      { href: '/ai',       label: 'AI Assistant', icon: Sparkles, minPlan: 'free' },
+      { href: '/reports',  label: 'Reports',      icon: BarChart3, minPlan: 'solo' },
+      { href: '/clients',  label: 'Clients',      icon: Users,     minPlan: 'solo' },
+      { href: '/invoices', label: 'Invoices',     icon: Receipt,   minPlan: 'solo' },
     ],
   },
   {
     label: 'Account',
     items: [
+      { href: '/team',             label: 'Team',         icon: UsersRound, minPlan: 'team' },
       { href: '/integrations',     label: 'Integrations', icon: Plug,       minPlan: 'solo' },
       { href: '/settings/billing', label: 'Billing',      icon: CreditCard, minPlan: 'free' },
       { href: '/settings',         label: 'Settings',     icon: Settings,   minPlan: 'free' },
@@ -81,10 +83,11 @@ const PLAN_BADGE_LABEL: Record<MinPlan, string> = {
 };
 
 interface SidebarProps {
-  user?: { full_name?: string | null; email?: string; avatar_url?: string | null; plan?: string };
+  user?:          { full_name?: string | null; email?: string; avatar_url?: string | null; plan?: string };
+  onCloseMobile?: () => void;
 }
 
-export function Sidebar({ user }: SidebarProps) {
+export function Sidebar({ user, onCloseMobile }: SidebarProps) {
   const pathname = usePathname();
   const router   = useRouter();
   const [collapsed, setCollapsed] = useState(false);
@@ -163,6 +166,7 @@ export function Sidebar({ user }: SidebarProps) {
                     key={href}
                     href={href}
                     title={collapsed ? label : undefined}
+                    onClick={onCloseMobile}
                     className={cn(
                       active ? 'sidebar-item-active' : 'sidebar-item',
                       collapsed && 'justify-center px-2',

@@ -9,6 +9,7 @@ const TABS = [
   { href: '/settings/notifications',  label: 'Notifications' },
   { href: '/settings/time-tracking',  label: 'Time Tracking' },
   { href: '/settings/billing',        label: 'Billing' },
+  { href: '/settings/api',            label: 'API & Webhooks' },
   { href: '/settings/security',       label: 'Security' },
   { href: '/settings/data-export',    label: 'Data Export' },
 ];

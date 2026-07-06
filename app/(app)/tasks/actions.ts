@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
 import type { TaskStatus, TaskPriority } from '@/lib/types';
+import { notifyTaskAssigned, notifyCommentAdded } from '@/lib/notifications';
 
 async function getWorkspaceId(userId: string) {
   const supabase = await createClient();
@@ -70,6 +71,24 @@ export async function createTask(input: {
     );
   }
 
+  // Notify assignee if different from creator
+  if (input.assignee_id && input.assignee_id !== user.id) {
+    const [profileRes, projectRes] = await Promise.all([
+      supabase.from('profiles').select('full_name').eq('id', user.id).single(),
+      input.project_id
+        ? supabase.from('projects').select('name').eq('id', input.project_id).single()
+        : Promise.resolve({ data: null }),
+    ]);
+    notifyTaskAssigned({
+      assigneeId:   input.assignee_id,
+      workspaceId:  wid,
+      taskId:       task.id,
+      taskTitle:    task.title,
+      assignerName: profileRes.data?.full_name ?? 'Someone',
+      projectName:  projectRes.data?.name ?? undefined,
+    }).catch(console.error);
+  }
+
   revalidatePath('/tasks');
   revalidatePath('/dashboard');
   return { data: task };
@@ -109,6 +128,30 @@ export async function updateTask(id: string, patch: {
 
   const { error } = await supabase.from('tasks').update(update).eq('id', id);
   if (error) return { error: error.message };
+
+  // Notify new assignee when assignee_id changed
+  if (patch.assignee_id && patch.assignee_id !== user.id) {
+    const [taskRes, profileRes, memberRes] = await Promise.all([
+      supabase.from('tasks').select('title, project_id, workspace_id').eq('id', id).single(),
+      supabase.from('profiles').select('full_name').eq('id', user.id).single(),
+      supabase.from('workspace_members').select('workspace_id').eq('user_id', user.id).maybeSingle(),
+    ]);
+    const task        = taskRes.data;
+    const workspaceId = task?.workspace_id ?? memberRes.data?.workspace_id;
+    if (task && workspaceId) {
+      const projectName = task.project_id
+        ? (await supabase.from('projects').select('name').eq('id', task.project_id).single()).data?.name
+        : undefined;
+      notifyTaskAssigned({
+        assigneeId:   patch.assignee_id,
+        workspaceId,
+        taskId:       id,
+        taskTitle:    task.title,
+        assignerName: profileRes.data?.full_name ?? 'Someone',
+        projectName,
+      }).catch(console.error);
+    }
+  }
 
   revalidatePath('/tasks');
   revalidatePath('/dashboard');
@@ -216,6 +259,32 @@ export async function addComment(taskId: string, content: string) {
     .single();
 
   if (error) return { error: error.message };
+
+  // Notify task assignee / creator about new comment (fire-and-forget)
+  const [taskRes, commenterRes, memberRes] = await Promise.all([
+    supabase.from('tasks').select('title, assignee_id, created_by, workspace_id').eq('id', taskId).single(),
+    supabase.from('profiles').select('full_name').eq('id', user.id).single(),
+    supabase.from('workspace_members').select('workspace_id').eq('user_id', user.id).maybeSingle(),
+  ]);
+
+  if (taskRes.data) {
+    const task        = taskRes.data;
+    const commenter   = commenterRes.data?.full_name ?? 'Someone';
+    const workspaceId = task.workspace_id ?? memberRes.data?.workspace_id;
+    const notifyUser  = task.assignee_id ?? task.created_by;
+
+    if (notifyUser && notifyUser !== user.id && workspaceId) {
+      notifyCommentAdded({
+        taskOwnerId:   notifyUser,
+        workspaceId,
+        taskId,
+        taskTitle:     task.title,
+        commenterName: commenter,
+        commentBody:   content.trim(),
+      }).catch(console.error);
+    }
+  }
+
   return { data };
 }
 

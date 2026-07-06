@@ -7,12 +7,12 @@ import { toast } from 'sonner';
 import {
   ArrowLeft, Pencil, Building2, Mail, Phone, Globe, MapPin,
   FileText, Clock, CheckSquare, FolderOpen, Receipt,
-  CircleDot, BadgeCheck, AlertCircle, Timer,
+  CircleDot, BadgeCheck, AlertCircle, Timer, Ticket, ExternalLink,
 } from 'lucide-react';
 import { ClientFormModal } from '../../_components/ClientFormModal';
 import type { Client, InvoiceSyncStatus, TaskStatus, TaskPriority } from '@/lib/types';
 
-type Tab = 'overview' | 'projects' | 'tasks' | 'time' | 'invoices';
+type Tab = 'overview' | 'projects' | 'tasks' | 'time' | 'invoices' | 'support';
 
 const STATUS_COLORS: Record<string, string> = {
   not_started: 'bg-muted text-muted-foreground',
@@ -56,12 +56,13 @@ function fmtDuration(minutes: number | null) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function ClientDetailClient({ client, projects, tasks, timeEntries, invoices }: {
-  client:      Client;
-  projects:    any[];
-  tasks:       any[];
-  timeEntries: any[];
-  invoices:    any[];
+export function ClientDetailClient({ client, projects, tasks, timeEntries, invoices, supportLinks }: {
+  client:       Client;
+  projects:     any[];
+  tasks:        any[];
+  timeEntries:  any[];
+  invoices:     any[];
+  supportLinks: any[];
 }) {
   const router = useRouter();
   const [tab,        setTab]        = useState<Tab>('overview');
@@ -78,6 +79,7 @@ export function ClientDetailClient({ client, projects, tasks, timeEntries, invoi
     { key: 'tasks',     label: 'Tasks',     count: tasks.length },
     { key: 'time',      label: 'Time',      count: timeEntries.length },
     { key: 'invoices',  label: 'Invoices',  count: invoices.length },
+    { key: 'support',   label: 'Support',   count: supportLinks.length },
   ];
 
   return (
@@ -385,6 +387,66 @@ export function ClientDetailClient({ client, projects, tasks, timeEntries, invoi
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* ── Support ── */}
+      {tab === 'support' && (
+        <div className="space-y-3">
+          {supportLinks.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <Ticket className="h-10 w-10 text-muted-foreground/40 mb-3" />
+              <p className="text-sm text-muted-foreground">No linked support tickets for this client.</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Tasks created from SupportCraft AI tickets will appear here.
+              </p>
+            </div>
+          )}
+          {supportLinks.map((link: any) => (
+            <div key={link.id} className="tc-card flex items-start gap-3 p-4">
+              <Ticket className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] font-mono text-muted-foreground">
+                    #{link.supportcraft_ticket_id}
+                  </span>
+                  {link.ticket_status && (
+                    <span className={`rounded-full px-1.5 py-px text-[10px] font-semibold capitalize ${
+                      link.ticket_status === 'open'     ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' :
+                      link.ticket_status === 'pending'  ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' :
+                      link.ticket_status === 'resolved' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
+                      'bg-muted text-muted-foreground'
+                    }`}>
+                      {link.ticket_status}
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm font-medium mt-0.5 truncate">
+                  {link.ticket_title ?? link.supportcraft_ticket_id}
+                </p>
+                {link.tasks && (
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Task: {link.tasks.title}
+                  </p>
+                )}
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Linked {fmtDate(link.created_at)}
+                  {link.last_synced_at && ` · Synced ${fmtDate(link.last_synced_at)}`}
+                </p>
+              </div>
+              {link.ticket_url && (
+                <a
+                  href={link.ticket_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:text-foreground transition-colors"
+                  title="View ticket in SupportCraft"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              )}
+            </div>
+          ))}
         </div>
       )}
 

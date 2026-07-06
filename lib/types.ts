@@ -10,7 +10,85 @@ export type Plan               = 'free' | 'solo' | 'team';
 
 export type SubscriptionStatus = 'trialing' | 'active' | 'cancelled' | 'expired' | 'past_due';
 
-export type UserRole           = 'owner' | 'admin' | 'member' | 'viewer';
+// ── api_keys ──────────────────────────────────────────────────────────────────
+export type ApiScope = 'read' | 'write' | 'admin';
+
+export interface ApiKey {
+  id:           string;
+  workspace_id: string;
+  user_id:      string;
+  name:         string;
+  key_prefix:   string;
+  scopes:       ApiScope[];
+  last_used_at: string | null;
+  expires_at:   string | null;
+  revoked_at:   string | null;
+  created_at:   string;
+}
+
+// ── webhooks ──────────────────────────────────────────────────────────────────
+export type WebhookEventType =
+  | 'task.created'
+  | 'task.updated'
+  | 'task.completed'
+  | 'project.created'
+  | 'project.completed'
+  | 'time_entry.created'
+  | 'invoice.created'
+  | 'support_ticket.linked';
+
+export interface Webhook {
+  id:            string;
+  workspace_id:  string;
+  user_id:       string;
+  name:          string;
+  url:           string;
+  events:        WebhookEventType[];
+  active:        boolean;
+  last_fired_at: string | null;
+  created_at:    string;
+}
+
+export interface WebhookDelivery {
+  id:           string;
+  webhook_id:   string;
+  event:        WebhookEventType;
+  payload:      Record<string, unknown>;
+  status_code:  number | null;
+  response:     string | null;
+  error:        string | null;
+  delivered_at: string | null;
+  attempts:     number;
+  created_at:   string;
+}
+
+// ── notifications ─────────────────────────────────────────────────────────────
+export type NotificationType =
+  | 'task_assigned'
+  | 'task_due_soon'
+  | 'task_overdue'
+  | 'comment_added'
+  | 'project_deadline_near'
+  | 'timer_running_long'
+  | 'invoice_sync_completed'
+  | 'support_ticket_task_created'
+  | 'team_invitation_received';
+
+export interface Notification {
+  id:           string;
+  user_id:      string;
+  workspace_id: string | null;
+  type:         NotificationType;
+  title:        string;
+  body:         string | null;
+  link:         string | null;
+  is_read:      boolean;
+  read_at:      string | null;
+  metadata:     Record<string, unknown>;
+  created_at:   string;
+}
+
+export type UserRole           = 'owner' | 'admin' | 'manager' | 'member' | 'viewer';
 export type ProjectMemberRole  = 'manager' | 'member' | 'viewer';
 
 export type ProjectStatus      = 'not_started' | 'active' | 'on_hold' | 'completed' | 'archived';
@@ -268,6 +346,7 @@ export interface TimeEntry {
   billable:         boolean;
   hourly_rate:      number | null;
   invoice_status:   TimeEntryInvoiceStatus;
+  invoice_sync_id:  string | null;
   source:           TimeEntrySource;
   created_at:       string;
   updated_at:       string;
@@ -281,6 +360,11 @@ export interface InvoiceSync {
   client_id:            string | null;
   user_id:              string;
   billcraft_invoice_id: string;
+  invoice_number:       string | null;
+  date_from:            string | null;
+  date_to:              string | null;
+  entry_count:          number;
+  notes:                string | null;
   total_hours:          number | null;
   total_amount:         number | null;
   currency:             string;
@@ -297,35 +381,28 @@ export interface SupportTicketLink {
   supportcraft_ticket_id: string;
   ticket_title:           string | null;
   ticket_url:             string | null;
+  ticket_status:          string | null;
+  ticket_priority:        string | null;
+  client_name:            string | null;
   sync_status:            SupportTicketSyncStatus;
+  last_synced_at:         string | null;
   created_by:             string | null;
   created_at:             string;
   updated_at:             string;
 }
 
-// ── notifications ─────────────────────────────────────────────────
-export interface Notification {
+// ── workspace_invitations ─────────────────────────────────────────
+export interface WorkspaceInvitation {
   id:           string;
-  user_id:      string;
-  workspace_id: string | null;
-  type:         NotificationType;
-  title:        string;
-  body:         string | null;
-  metadata:     Record<string, unknown>;
-  read_at:      string | null;  // null = unread
+  workspace_id: string;
+  email:        string;
+  role:         Exclude<UserRole, 'owner'>;
+  token:        string;
+  invited_by:   string | null;
+  accepted_at:  string | null;
+  expires_at:   string;
   created_at:   string;
 }
-
-export type NotificationType =
-  | 'task_assigned'
-  | 'task_due_soon'
-  | 'task_overdue'
-  | 'comment_added'
-  | 'member_invited'
-  | 'billing_update'
-  | 'invoice_synced'
-  | 'ticket_linked'
-  | string;
 
 // ── integration_settings ──────────────────────────────────────────
 export interface IntegrationSetting {

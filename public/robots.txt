@@ -1,0 +1,22 @@
+User-agent: *
+Allow: /
+Allow: /pricing
+Allow: /faq
+Allow: /privacy
+Allow: /terms
+
+Disallow: /dashboard
+Disallow: /projects
+Disallow: /tasks
+Disallow: /time
+Disallow: /reports
+Disallow: /clients
+Disallow: /invoices
+Disallow: /ai
+Disallow: /team
+Disallow: /integrations
+Disallow: /settings
+Disallow: /api/
+Disallow: /admin/
+
+Sitemap: https://taskcraft.aakasa.dev/sitemap.xml

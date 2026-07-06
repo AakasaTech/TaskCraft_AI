@@ -38,7 +38,7 @@ export default async function ClientDetailPage({ params }: Props) {
 
   if (error || !client) notFound();
 
-  const [projectsRes, invoicesRes] = await Promise.all([
+  const [projectsRes, invoicesRes, supportRes] = await Promise.all([
     supabase
       .from('projects')
       .select('id, name, color, status, billable, due_date, hourly_rate')
@@ -52,6 +52,14 @@ export default async function ClientDetailPage({ params }: Props) {
       .eq('workspace_id', wid)
       .eq('client_id', id)
       .order('created_at', { ascending: false }),
+
+    supabase
+      .from('support_ticket_links')
+      .select('*, tasks(id, title, status)')
+      .eq('workspace_id', wid)
+      .eq('client_name', client.name)
+      .order('created_at', { ascending: false })
+      .limit(50),
   ]);
 
   const projectIds = (projectsRes.data ?? []).map((p: { id: string }) => p.id);
@@ -86,6 +94,7 @@ export default async function ClientDetailPage({ params }: Props) {
       tasks={tasksRes.data ?? []}
       timeEntries={timeRes.data ?? []}
       invoices={invoicesRes.data ?? []}
+      supportLinks={supportRes.data ?? []}
     />
   );
 }

@@ -4,7 +4,8 @@ import { useEffect, useState, useTransition, useRef } from 'react';
 import { toast } from 'sonner';
 import {
   X, Pencil, Trash2, Check, Circle, ChevronDown, Tag, Plus,
-  MessageSquare, ListChecks, Clock, Send,
+  MessageSquare, ListChecks, Clock, Send, Ticket, ExternalLink,
+  RefreshCw, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TaskStatusBadge } from '@/components/shared/StatusBadge';
@@ -14,8 +15,9 @@ import {
   updateTask, deleteTask, addComment, deleteComment,
   createSubtask, updateSubtaskStatus, assignLabel, removeLabel,
 } from '../actions';
+import { addNoteToTicket, syncTaskStatusToTicket } from '../supportcraft-actions';
 import type { TaskRich, LabelChip, TaskMember, TaskProject } from '../_types';
-import type { TaskStatus, TaskPriority } from '@/lib/types';
+import type { TaskStatus, TaskPriority, SupportTicketLink } from '@/lib/types';
 
 interface Comment {
   id: string;
@@ -60,6 +62,12 @@ export function TaskDetailDrawer({
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // Support ticket link state
+  const [ticketLinks,  setTicketLinks]  = useState<SupportTicketLink[]>([]);
+  const [ticketNote,   setTicketNote]   = useState('');
+  const [isSendingNote, startSendNote]  = useTransition();
+  const [isSyncing,     startSync]      = useTransition();
+
   const subtasks = allTasks.filter((t) => t.parent_task_id === task?.id);
 
   // Load comments when task changes
@@ -70,6 +78,14 @@ export function TaskDetailDrawer({
       .then((r) => r.json())
       .then((j) => setComments(j.data ?? []))
       .finally(() => setCommentsLoading(false));
+  }, [task?.id]);
+
+  // Load ticket links when task changes
+  useEffect(() => {
+    if (!task) { setTicketLinks([]); return; }
+    fetch(`/api/tasks/${task.id}/ticket-links`)
+      .then((r) => r.json())
+      .then((j) => setTicketLinks(j.data ?? []));
   }, [task?.id]);
 
   function handleStatusChange(status: TaskStatus) {
@@ -261,6 +277,110 @@ export function TaskDetailDrawer({
                   </div>
                 </div>
               </div>
+
+              {/* Support Ticket Links */}
+              {ticketLinks.length > 0 && (
+                <div>
+                  <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <Ticket className="h-3.5 w-3.5" />
+                    Support Ticket
+                  </h3>
+
+                  <div className="space-y-2">
+                    {ticketLinks.map((link) => (
+                      <div key={link.id} className="rounded-xl border border-border bg-muted/20 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-[11px] font-mono text-muted-foreground">
+                                #{link.supportcraft_ticket_id}
+                              </span>
+                              {link.ticket_status && (
+                                <span className={cn(
+                                  'rounded-full px-1.5 py-px text-[10px] font-semibold capitalize',
+                                  link.ticket_status === 'open'     && 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+                                  link.ticket_status === 'pending'  && 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+                                  link.ticket_status === 'resolved' && 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+                                  link.ticket_status === 'closed'   && 'bg-muted text-muted-foreground',
+                                )}>
+                                  {link.ticket_status}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-sm font-medium mt-0.5 truncate">
+                              {link.ticket_title ?? link.supportcraft_ticket_id}
+                            </p>
+                            {link.client_name && (
+                              <p className="text-xs text-muted-foreground">{link.client_name}</p>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            {link.ticket_url && (
+                              <a href={link.ticket_url} target="_blank" rel="noopener noreferrer"
+                                className="rounded-lg p-1.5 text-muted-foreground hover:text-foreground transition-colors">
+                                <ExternalLink className="h-3.5 w-3.5" />
+                              </a>
+                            )}
+                            <button
+                              onClick={() =>
+                                startSync(async () => {
+                                  const r = await syncTaskStatusToTicket(task!.id);
+                                  if (r.error) toast.error(r.error);
+                                  else if (!r.data?.skipped) toast.success('Ticket status synced');
+                                })
+                              }
+                              disabled={isSyncing}
+                              className="rounded-lg p-1.5 text-muted-foreground hover:text-foreground transition-colors"
+                              title="Sync task status to ticket"
+                            >
+                              {isSyncing
+                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                : <RefreshCw className="h-3.5 w-3.5" />
+                              }
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Add note form */}
+                        <div className="mt-3 flex gap-2">
+                          <input
+                            type="text"
+                            placeholder="Add internal note to ticket…"
+                            value={ticketNote}
+                            onChange={(e) => setTicketNote(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && ticketNote.trim()) {
+                                startSendNote(async () => {
+                                  const r = await addNoteToTicket(task!.id, ticketNote.trim());
+                                  if (r.error) toast.error(r.error);
+                                  else { toast.success('Note added to ticket'); setTicketNote(''); }
+                                });
+                              }
+                            }}
+                            disabled={isSendingNote}
+                            className="flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-xs outline-none focus:ring-2 focus:ring-primary/30"
+                          />
+                          <button
+                            onClick={() => {
+                              if (!ticketNote.trim()) return;
+                              startSendNote(async () => {
+                                const r = await addNoteToTicket(task!.id, ticketNote.trim());
+                                if (r.error) toast.error(r.error);
+                                else { toast.success('Note added to ticket'); setTicketNote(''); }
+                              });
+                            }}
+                            disabled={isSendingNote || !ticketNote.trim()}
+                            className="rounded-lg bg-primary/10 p-1.5 text-primary hover:bg-primary/20 disabled:opacity-40 transition-colors"
+                          >
+                            {isSendingNote ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Comments */}
               <div>

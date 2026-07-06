@@ -1,7 +1,6 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
-import { Sidebar } from '@/components/shared/Sidebar';
-import { AppHeader } from '@/components/shared/AppHeader';
+import { AppShell } from '@/components/shared/AppShell';
 import type { RunningTimer } from '@/app/(app)/time/_types';
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -45,14 +44,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      <Sidebar user={{ ...profileRes.data, email: user.email }} />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <AppHeader runningTimer={runningTimer} />
-        <main className="flex-1 overflow-y-auto px-6 py-6">
-          {children}
-        </main>
-      </div>
-    </div>
+    <AppShell
+      user={{ ...profileRes.data, email: user.email }}
+      userId={user.id}
+      runningTimer={runningTimer}
+    >
+      {children}
+    </AppShell>
   );
 }
