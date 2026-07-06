@@ -5,6 +5,16 @@ import { createClient } from '@/lib/supabase/server';
 import type { TaskStatus, TaskPriority } from '@/lib/types';
 import { notifyTaskAssigned, notifyCommentAdded } from '@/lib/notifications';
 
+const VALID_PRIORITIES: readonly TaskPriority[] = ['low', 'medium', 'high', 'urgent'];
+const VALID_STATUSES:   readonly TaskStatus[]   = ['backlog', 'todo', 'in_progress', 'in_review', 'done'];
+
+function sanitizePriority(p: unknown): TaskPriority {
+  return VALID_PRIORITIES.includes(p as TaskPriority) ? (p as TaskPriority) : 'medium';
+}
+function sanitizeStatus(s: unknown): TaskStatus {
+  return VALID_STATUSES.includes(s as TaskStatus) ? (s as TaskStatus) : 'todo';
+}
+
 async function getWorkspaceId(userId: string) {
   const supabase = await createClient();
   const { data } = await supabase
@@ -48,8 +58,8 @@ export async function createTask(input: {
       created_by:      user.id,
       title:           input.title.trim(),
       description:     input.description?.trim() || null,
-      status:          input.status ?? 'todo',
-      priority:        input.priority ?? 'medium',
+      status:          sanitizeStatus(input.status ?? 'todo'),
+      priority:        sanitizePriority(input.priority ?? 'medium'),
       project_id:      input.project_id || null,
       assignee_id:     input.assignee_id || null,
       due_date:        input.due_date || null,
@@ -116,8 +126,8 @@ export async function updateTask(id: string, patch: {
   const update: Record<string, unknown> = {};
   if (patch.title           !== undefined) update.title           = patch.title.trim();
   if (patch.description     !== undefined) update.description     = patch.description?.trim() || null;
-  if (patch.status          !== undefined) update.status          = patch.status;
-  if (patch.priority        !== undefined) update.priority        = patch.priority;
+  if (patch.status          !== undefined) update.status          = sanitizeStatus(patch.status);
+  if (patch.priority        !== undefined) update.priority        = sanitizePriority(patch.priority);
   if (patch.project_id      !== undefined) update.project_id      = patch.project_id || null;
   if (patch.assignee_id     !== undefined) update.assignee_id     = patch.assignee_id || null;
   if (patch.due_date        !== undefined) update.due_date        = patch.due_date || null;

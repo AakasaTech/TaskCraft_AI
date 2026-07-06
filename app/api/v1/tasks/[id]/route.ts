@@ -3,6 +3,13 @@ import { authenticateApiKey, hasScope } from '@/lib/api-auth';
 import { apiSuccess, apiError } from '@/lib/api-response';
 import { deliverWebhookEvent } from '@/lib/webhooks';
 
+const VALID_STATUSES   = ['backlog', 'todo', 'in_progress', 'in_review', 'done'] as const;
+const VALID_PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
+type ValidStatus   = typeof VALID_STATUSES[number];
+type ValidPriority = typeof VALID_PRIORITIES[number];
+function isValidStatus(v: unknown): v is ValidStatus     { return VALID_STATUSES.includes(v as ValidStatus); }
+function isValidPriority(v: unknown): v is ValidPriority { return VALID_PRIORITIES.includes(v as ValidPriority); }
+
 export const runtime = 'nodejs';
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -37,6 +44,12 @@ export async function PATCH(req: Request, { params }: Ctx) {
 
   const body  = await req.json().catch(() => ({}));
   const admin = createAdminClient();
+
+  // Validate enum fields before hitting the DB
+  if (body.status   !== undefined && !isValidStatus(body.status))
+    return apiError('VALIDATION', `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}.`, 422);
+  if (body.priority !== undefined && !isValidPriority(body.priority))
+    return apiError('VALIDATION', `Invalid priority. Must be one of: ${VALID_PRIORITIES.join(', ')}.`, 422);
 
   const existing = await resolveTask(admin, id, ctx.workspaceId);
   if (!existing) return apiError('NOT_FOUND', 'Task not found.', 404);
