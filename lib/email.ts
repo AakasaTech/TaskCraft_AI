@@ -46,7 +46,7 @@ export function getEmailPrefKey(type: NotificationType): string | null {
     invoice_sync_completed:      'billing',
     support_ticket_task_created: 'project_updates',
     team_invitation_received:    'task_assigned', // always-important, reuse slot
-    timer_running_long:           null,            // in-app only
+    timer_running_long:           undefined,       // in-app only
   };
   return MAP[type] ?? null;
 }

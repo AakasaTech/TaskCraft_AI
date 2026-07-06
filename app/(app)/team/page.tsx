@@ -88,12 +88,19 @@ export default async function TeamPage() {
       .order('position', { ascending: true }),
   ]);
 
+  const members = (membersRes.data ?? []).map((m) => ({
+    ...m,
+    profiles: Array.isArray(m.profiles)
+      ? (m.profiles[0] as { full_name: string | null; avatar_url: string | null; email: string } | undefined) ?? null
+      : m.profiles as { full_name: string | null; avatar_url: string | null; email: string } | null,
+  }));
+
   return (
     <TeamClient
       currentUserId={user.id}
       currentUserRole={membership.role}
       workspaceId={wid}
-      members={membersRes.data ?? []}
+      members={members}
       pendingInvites={invitesRes.data ?? []}
       projects={projectsRes.data ?? []}
     />

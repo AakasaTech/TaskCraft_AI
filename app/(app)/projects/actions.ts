@@ -50,7 +50,7 @@ export async function createProject(input: ProjectInput) {
     .single();
 
   const planKey = (profile?.plan ?? 'free') as keyof typeof PLANS;
-  const limit   = PLANS[planKey].max_projects;
+  const limit: number = PLANS[planKey].max_projects;
 
   if (limit !== -1) {
     const { count } = await supabase

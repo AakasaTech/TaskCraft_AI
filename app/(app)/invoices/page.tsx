@@ -92,7 +92,7 @@ export default async function InvoicesPage() {
       <PageHeader
         title="Invoices"
         subtitle="Billable time synced to BillCraft AI"
-        action={
+        actions={
           <Link href="/invoices/new">
             <Button size="sm" disabled={!billcraftConnected}>
               <Plus className="mr-1.5 h-4 w-4" />
@@ -114,7 +114,7 @@ export default async function InvoicesPage() {
 
       {invoices.length === 0 ? (
         <EmptyState
-          icon={<FileText className="h-8 w-8 text-muted-foreground/40" />}
+          icon={FileText}
           title="No invoices yet"
           description={
             billcraftConnected

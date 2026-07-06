@@ -110,7 +110,7 @@ export default async function ProjectsPage() {
   }));
 
   const plan          = (profileRes.data?.plan ?? 'free') as Plan;
-  const projectLimit  = PLANS[plan].max_projects;
+  const projectLimit: number = PLANS[plan].max_projects;
   const activeCount   = projects.filter((p) => p.status !== 'archived').length;
   const atLimit       = projectLimit !== -1 && activeCount >= projectLimit;
 

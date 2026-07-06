@@ -157,7 +157,7 @@ async function handleTicketCreated(
     userId:    member.user_id,
     taskTitle: task.title,
     taskId:    task.id,
-    ticketId:  ticket.id,
+    ticketTitle: ticket.title,
   }).catch(console.error);
 }
 

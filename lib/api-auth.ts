@@ -30,12 +30,11 @@ export async function authenticateApiKey(req: Request): Promise<ApiContext | nul
   if (data.expires_at && new Date(data.expires_at) < new Date())  return null;
 
   // Fire-and-forget last_used_at update
-  admin
+  void admin
     .from('api_keys')
     .update({ last_used_at: new Date().toISOString() })
     .eq('id', data.id)
-    .then(() => {})
-    .catch(console.error);
+    .then(undefined, console.error);
 
   return {
     userId:      data.user_id,
