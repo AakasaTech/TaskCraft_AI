@@ -311,6 +311,7 @@ export function TasksClient({
 
       {/* Create/edit modal */}
       <TaskFormModal
+        key={editTask?.id ?? 'new'}
         open={formOpen}
         onClose={() => { setFormOpen(false); setEditTask(undefined); }}
         onSuccess={handleFormSuccess}

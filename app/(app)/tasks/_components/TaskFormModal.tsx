@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useState, useTransition } from 'react';
 import { toast } from 'sonner';
 import { X, Loader2, Plus, Tag } from 'lucide-react';
 import { Label } from '@/components/ui/label';
@@ -39,45 +39,26 @@ export function TaskFormModal({
   const isEditing = !!initial?.id;
   const [isPending, startTransition] = useTransition();
 
-  const [title,    setTitle]    = useState('');
-  const [desc,     setDesc]     = useState('');
-  const [status,   setStatus]   = useState<TaskStatus>(defaultStatus);
-  const [priority, setPriority] = useState<TaskPriority>('medium');
-  const [project,  setProject]  = useState('');
-  const [assignee, setAssignee] = useState('');
-  const [dueDate,  setDueDate]  = useState('');
-  const [startDate,setStart]    = useState('');
-  const [estHours, setEstHours] = useState('');
-  const [billable, setBillable] = useState(false);
-  const [rate,     setRate]     = useState('');
-  const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
+  const [title,    setTitle]    = useState(initial?.title ?? '');
+  const [desc,     setDesc]     = useState(initial?.description ?? '');
+  const [status,   setStatus]   = useState<TaskStatus>(initial?.status ?? defaultStatus);
+  const [priority, setPriority] = useState<TaskPriority>(initial?.priority ?? 'medium');
+  const [project,  setProject]  = useState(initial?.project_id ?? defaultProjectId ?? '');
+  const [assignee, setAssignee] = useState(initial?.assignee_id ?? '');
+  const [dueDate,  setDueDate]  = useState(initial?.due_date?.slice(0, 10) ?? '');
+  const [startDate,setStart]    = useState(initial?.start_date?.slice(0, 10) ?? '');
+  const [estHours, setEstHours] = useState(initial?.estimated_hours?.toString() ?? '');
+  const [billable, setBillable] = useState(initial?.billable ?? false);
+  const [rate,     setRate]     = useState(initial?.hourly_rate?.toString() ?? '');
+  const [selectedLabels, setSelectedLabels] = useState<string[]>(
+    initial?.labels.map((l) => l.id) ?? []
+  );
 
   // Label creation
   const [newLabelName,  setNewLabelName]  = useState('');
   const [newLabelColor, setNewLabelColor] = useState(LABEL_COLORS[0]);
   const [showNewLabel,  setShowNewLabel]  = useState(false);
   const [allLabels, setAllLabels] = useState<LabelChip[]>(labels);
-
-  useEffect(() => {
-    if (open) {
-      setTitle(initial?.title ?? '');
-      setDesc(initial?.description ?? '');
-      setStatus(initial?.status ?? defaultStatus);
-      setPriority(initial?.priority ?? 'medium');
-      setProject(initial?.project_id ?? defaultProjectId ?? '');
-      setAssignee(initial?.assignee_id ?? '');
-      setDueDate(initial?.due_date?.slice(0, 10) ?? '');
-      setStart(initial?.start_date?.slice(0, 10) ?? '');
-      setEstHours(initial?.estimated_hours?.toString() ?? '');
-      setBillable(initial?.billable ?? false);
-      setRate(initial?.hourly_rate?.toString() ?? '');
-      setSelectedLabels(initial?.labels.map((l) => l.id) ?? []);
-      setAllLabels(labels);
-      setShowNewLabel(false);
-      setNewLabelName('');
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
 
   function toggleLabel(id: string) {
     setSelectedLabels((prev) =>
