@@ -206,10 +206,10 @@ export async function createTaskFromTicket(input: {
   // Notify the task creator (themselves) about the new linked task
   notifySupportTicketTaskCreated({
     workspaceId,
-    userId:    user.id,
-    taskTitle: task.title,
-    taskId:    task.id,
-    ticketId:  input.ticketId,
+    userId:      user.id,
+    taskTitle:   task.title,
+    taskId:      task.id,
+    ticketTitle: input.ticketTitle,
   }).catch(console.error);
 
   return { data: { task } };
