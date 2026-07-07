@@ -86,6 +86,33 @@ export async function grantFreepassAction(
   }
 }
 
+// ─── Extend trial ─────────────────────────────────────────────────────────────
+
+export async function extendTrialAction(subscriptionId: string, days: number): Promise<Result> {
+  try {
+    await verifyAdmin()
+    const admin = createAdminClient()
+    const { data: sub } = await admin
+      .from('subscriptions')
+      .select('trial_ends_at')
+      .eq('id', subscriptionId)
+      .single()
+    const base = sub?.trial_ends_at && new Date(sub.trial_ends_at) > new Date()
+      ? new Date(sub.trial_ends_at)
+      : new Date()
+    base.setDate(base.getDate() + days)
+    const { error } = await admin
+      .from('subscriptions')
+      .update({ trial_ends_at: base.toISOString() })
+      .eq('id', subscriptionId)
+    if (error) return { error: error.message }
+    revalidatePath('/admin/users')
+    return { success: true }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Failed' }
+  }
+}
+
 // ─── Revoke free pass ─────────────────────────────────────────────────────────
 
 export async function revokeFreepassAction(userId: string): Promise<Result> {
