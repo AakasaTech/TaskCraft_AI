@@ -29,7 +29,7 @@ export async function saveBillCraftSettings(formData: {
 
   const config = {
     api_key: formData.api_key.trim(),
-    api_url: formData.api_url.trim() || 'https://billcraft.aakasa.dev/api/v1',
+    api_url: formData.api_url.trim() || 'https://billcraft.aakasa.dev/api',
   };
 
   const { error } = await supabase
@@ -56,7 +56,7 @@ export async function testBillCraftConnection(apiKey?: string, apiUrl?: string) 
 
   // If called with explicit values (pre-save test), use those directly
   if (apiKey) {
-    const svc = new BillCraftService(apiKey, apiUrl || 'https://billcraft.aakasa.dev/api/v1');
+    const svc = new BillCraftService(apiKey, apiUrl || 'https://billcraft.aakasa.dev/api');
     return svc.testConnection();
   }
 

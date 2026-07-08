@@ -62,7 +62,7 @@ export function BillCraftSettingsClient({
 }: Props) {
   const router = useRouter();
   const [apiKey,   setApiKey]   = useState(initialKey);
-  const [apiUrl,   setApiUrl]   = useState(initialUrl || 'https://billcraft.aakasa.dev/api/v1');
+  const [apiUrl,   setApiUrl]   = useState(initialUrl || 'https://billcraft.aakasa.dev/api');
   const [testResult, setTestResult] = useState<{ ok: boolean; name?: string } | null>(null);
 
   const [isSaving,      startSave]      = useTransition();
@@ -202,7 +202,7 @@ export function BillCraftSettingsClient({
               type="url"
               value={apiUrl}
               onChange={(e) => setApiUrl(e.target.value)}
-              placeholder="https://billcraft.aakasa.dev/api/v1"
+              placeholder="https://billcraft.aakasa.dev/api"
             />
             <p className="text-[11px] text-muted-foreground">Leave as default unless you are self-hosting BillCraft.</p>
           </div>

@@ -80,7 +80,7 @@ export class BillCraftService {
 
   constructor(
     private readonly apiKey: string,
-    private readonly baseUrl: string = 'https://app.billcraft.ai/api',
+    private readonly baseUrl: string = 'https://billcraft.aakasa.dev/api',
   ) {
     this.isMock = !apiKey || apiKey.startsWith('mock_') || apiKey === 'demo';
   }
