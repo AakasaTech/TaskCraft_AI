@@ -74,10 +74,17 @@ export async function saveSupportCraftSettings(formData: {
   return { data: { ok: true, webhook_secret: webhookSecret } };
 }
 
-export async function testSupportCraftConnection() {
+export async function testSupportCraftConnection(apiKey?: string, apiUrl?: string) {
   const { supabase, workspaceId } = await getContext();
   if (!workspaceId) return { error: 'No workspace found' };
 
+  // If called with explicit values (pre-save test), use those directly
+  if (apiKey) {
+    const svc = new SupportCraftService(apiKey, apiUrl || 'https://supportcraft.aakasa.dev/api/v1');
+    return svc.testConnection();
+  }
+
+  // Otherwise fall back to saved settings
   const { data: settings } = await supabase
     .from('integration_settings')
     .select('config')

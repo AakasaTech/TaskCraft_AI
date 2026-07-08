@@ -1,7 +1,54 @@
 // SupportCraft AI integration service.
 // Mock mode activates when api_key is empty, "demo", or starts with "mock_".
+// Uses node:http/https for all real HTTP calls — avoids undici/fetch issues.
+// Set SUPPORTCRAFT_INTERNAL_URL=http://supportcraft:3002/api/v1 in Docker.
 
+import http  from 'node:http'
+import https from 'node:https'
 import type { TaskStatus } from '@/lib/types';
+
+function nodeRequest(
+  method: 'GET' | 'POST' | 'PATCH',
+  url: string,
+  headers: Record<string, string>,
+  body?: string,
+  timeoutMs = 10_000,
+): Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url)
+    const isHttps = u.protocol === 'https:'
+    const options = {
+      hostname: u.hostname,
+      port:     u.port || (isHttps ? 443 : 80),
+      path:     u.pathname + u.search,
+      method,
+      headers:  body
+        ? { ...headers, 'Content-Length': String(Buffer.byteLength(body)) }
+        : headers,
+      agent: isHttps
+        ? new https.Agent({ keepAlive: false })
+        : new http.Agent({ keepAlive: false }),
+    }
+    const transport = isHttps ? https : http
+    const req = transport.request(options, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString()
+        const status = res.statusCode ?? 0
+        resolve({
+          ok:   status >= 200 && status < 300,
+          status,
+          json: () => Promise.resolve(JSON.parse(text)),
+        })
+      })
+    })
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('Request timeout')) })
+    req.on('error', reject)
+    if (body) req.write(body)
+    req.end()
+  })
+}
 
 export interface SupportCraftWorkspace {
   id:   string;
@@ -103,12 +150,14 @@ const MOCK_TICKETS: SupportCraftTicket[] = [
 
 export class SupportCraftService {
   private readonly isMock: boolean;
+  private readonly effectiveUrl: string;
 
   constructor(
     private readonly apiKey: string,
-    private readonly baseUrl: string = 'https://app.supportcraft.ai/api',
+    private readonly baseUrl: string = 'https://supportcraft.aakasa.dev/api/v1',
   ) {
     this.isMock = !apiKey || apiKey.startsWith('mock_') || apiKey === 'demo';
+    this.effectiveUrl = process.env.SUPPORTCRAFT_INTERNAL_URL || this.baseUrl;
   }
 
   async testConnection(): Promise<{ ok: boolean; workspace?: SupportCraftWorkspace; error?: string }> {
@@ -117,13 +166,10 @@ export class SupportCraftService {
       return { ok: true, workspace: { id: 'mock-ws-sc', name: 'Demo Support Workspace (Mock)' } };
     }
     try {
-      const res = await fetch(`${this.baseUrl}/v1/workspace`, {
-        headers: this.headers(),
-        signal: AbortSignal.timeout(8_000),
-      });
+      const res = await nodeRequest('GET', `${this.effectiveUrl}/workspace`, this.headers())
       if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
-      const data = await res.json();
-      return { ok: true, workspace: data.workspace ?? data };
+      const data = await res.json() as { workspace?: SupportCraftWorkspace };
+      return { ok: true, workspace: data.workspace ?? (data as unknown as SupportCraftWorkspace) };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Connection failed' };
     }
@@ -139,12 +185,12 @@ export class SupportCraftService {
       if (params?.status) tickets = tickets.filter((t) => t.status === params.status);
       return tickets.slice(0, params?.limit ?? 20);
     }
-    const url = new URL(`${this.baseUrl}/v1/tickets`);
-    if (params?.status) url.searchParams.set('status', params.status);
-    if (params?.limit)  url.searchParams.set('per_page', String(params.limit));
-    const res = await fetch(url, { headers: this.headers(), signal: AbortSignal.timeout(8_000) });
+    const u = new URL(`${this.effectiveUrl}/tickets`);
+    if (params?.status) u.searchParams.set('status', params.status);
+    if (params?.limit)  u.searchParams.set('per_page', String(params.limit));
+    const res = await nodeRequest('GET', u.toString(), this.headers())
     if (!res.ok) throw new Error(`SupportCraft API error: ${res.status}`);
-    const data = await res.json();
+    const data = await res.json() as { data?: SupportCraftTicket[] };
     return (data.data ?? data) as SupportCraftTicket[];
   }
 
@@ -155,12 +201,9 @@ export class SupportCraftService {
       if (!ticket) throw new Error(`Ticket ${id} not found`);
       return ticket;
     }
-    const res = await fetch(`${this.baseUrl}/v1/tickets/${id}`, {
-      headers: this.headers(),
-      signal: AbortSignal.timeout(8_000),
-    });
+    const res = await nodeRequest('GET', `${this.effectiveUrl}/tickets/${id}`, this.headers())
     if (!res.ok) throw new Error(`SupportCraft API error: ${res.status}`);
-    const data = await res.json();
+    const data = await res.json() as { data?: SupportCraftTicket };
     return (data.data ?? data) as SupportCraftTicket;
   }
 
@@ -176,14 +219,14 @@ export class SupportCraftService {
         created_at:  new Date().toISOString(),
       };
     }
-    const res = await fetch(`${this.baseUrl}/v1/tickets/${ticketId}/notes`, {
-      method:  'POST',
-      headers: { ...this.headers(), 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ content, is_internal: isInternal }),
-      signal:  AbortSignal.timeout(10_000),
-    });
+    const res = await nodeRequest(
+      'POST', `${this.effectiveUrl}/tickets/${ticketId}/notes`,
+      { ...this.headers(), 'Content-Type': 'application/json' },
+      JSON.stringify({ content, is_internal: isInternal }),
+      10_000,
+    )
     if (!res.ok) throw new Error(`SupportCraft API error: ${res.status}`);
-    const data = await res.json();
+    const data = await res.json() as { data?: SupportCraftNote };
     return (data.data ?? data) as SupportCraftNote;
   }
 
@@ -192,12 +235,12 @@ export class SupportCraftService {
       await delay(300);
       return;
     }
-    const res = await fetch(`${this.baseUrl}/v1/tickets/${ticketId}`, {
-      method:  'PATCH',
-      headers: { ...this.headers(), 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ status }),
-      signal:  AbortSignal.timeout(10_000),
-    });
+    const res = await nodeRequest(
+      'PATCH', `${this.effectiveUrl}/tickets/${ticketId}`,
+      { ...this.headers(), 'Content-Type': 'application/json' },
+      JSON.stringify({ status }),
+      10_000,
+    )
     if (!res.ok) throw new Error(`SupportCraft API error: ${res.status}`);
   }
 

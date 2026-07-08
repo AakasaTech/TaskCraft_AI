@@ -114,7 +114,7 @@ export function SupportCraftSettingsClient({
   function handleTest() {
     setTestResult(null);
     startTest(async () => {
-      const res = await testSupportCraftConnection();
+      const res = await testSupportCraftConnection(apiKey, apiUrl);
       if ('ok' in res && res.ok) {
         setTestResult({ ok: true, name: res.workspace?.name });
         toast.success('Connection successful!');
