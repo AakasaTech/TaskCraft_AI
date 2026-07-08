@@ -50,7 +50,7 @@ export async function saveSupportCraftSettings(formData: {
 
   const config = {
     api_key:            formData.api_key.trim(),
-    api_url:            formData.api_url.trim() || 'https://app.supportcraft.ai/api',
+    api_url:            formData.api_url.trim() || 'https://supportcraft.aakasa.dev/api/v1',
     webhook_secret:     webhookSecret,
     auto_create_tasks:  formData.auto_create_tasks,
     default_project_id: formData.default_project_id || null,

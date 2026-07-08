@@ -62,7 +62,7 @@ export function BillCraftSettingsClient({
 }: Props) {
   const router = useRouter();
   const [apiKey,   setApiKey]   = useState(initialKey);
-  const [apiUrl,   setApiUrl]   = useState(initialUrl || 'https://app.billcraft.ai/api');
+  const [apiUrl,   setApiUrl]   = useState(initialUrl || 'https://billcraft.aakasa.dev/api/v1');
   const [testResult, setTestResult] = useState<{ ok: boolean; name?: string } | null>(null);
 
   const [isSaving,      startSave]      = useTransition();
@@ -86,7 +86,7 @@ export function BillCraftSettingsClient({
   function handleTest() {
     setTestResult(null);
     startTest(async () => {
-      const res = await testBillCraftConnection();
+      const res = await testBillCraftConnection(apiKey, apiUrl);
       if ('ok' in res && res.ok) {
         setTestResult({ ok: true, name: res.workspace?.name });
         toast.success('Connection successful!');
@@ -162,7 +162,7 @@ export function BillCraftSettingsClient({
         </div>
         {connected && (
           <a
-            href="https://app.billcraft.ai"
+            href="https://billcraft.aakasa.dev"
             target="_blank"
             rel="noopener noreferrer"
             className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:text-foreground transition-colors"
@@ -188,7 +188,7 @@ export function BillCraftSettingsClient({
             />
             <p className="text-[11px] text-muted-foreground">
               Find your API key in{' '}
-              <a href="https://app.billcraft.ai/settings/api" target="_blank" rel="noopener noreferrer" className="underline">
+              <a href="https://billcraft.aakasa.dev/settings/api" target="_blank" rel="noopener noreferrer" className="underline">
                 BillCraft → Settings → API
               </a>
               . Use <code className="rounded bg-muted px-1">mock_demo</code> to test without a real account.
@@ -202,7 +202,7 @@ export function BillCraftSettingsClient({
               type="url"
               value={apiUrl}
               onChange={(e) => setApiUrl(e.target.value)}
-              placeholder="https://app.billcraft.ai/api"
+              placeholder="https://billcraft.aakasa.dev/api/v1"
             />
             <p className="text-[11px] text-muted-foreground">Leave as default unless you are self-hosting BillCraft.</p>
           </div>

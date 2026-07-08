@@ -63,7 +63,7 @@ export function SupportCraftSettingsClient({
   const router = useRouter();
 
   const [apiKey,             setApiKey]             = useState(initialKey);
-  const [apiUrl,             setApiUrl]             = useState(initialUrl || 'https://app.supportcraft.ai/api');
+  const [apiUrl,             setApiUrl]             = useState(initialUrl || 'https://supportcraft.aakasa.dev/api/v1');
   const [webhookSecret,      setWebhookSecret]      = useState(initialSecret);
   const [autoCreateTasks,    setAutoCreateTasks]    = useState(initialAutoCreate);
   const [defaultProjectId,   setDefaultProjectId]   = useState(initialDefaultProject);
@@ -195,7 +195,7 @@ export function SupportCraftSettingsClient({
           </p>
         </div>
         {connected && (
-          <a href="https://app.supportcraft.ai" target="_blank" rel="noopener noreferrer"
+          <a href="https://supportcraft.aakasa.dev" target="_blank" rel="noopener noreferrer"
             className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:text-foreground transition-colors" title="Open SupportCraft">
             <ExternalLink className="h-4 w-4" />
           </a>
@@ -211,7 +211,7 @@ export function SupportCraftSettingsClient({
               placeholder="sc_live_••••••••••••••••" autoComplete="off" />
             <p className="text-[11px] text-muted-foreground">
               Find your key in{' '}
-              <a href="https://app.supportcraft.ai/settings/api" target="_blank" rel="noopener noreferrer" className="underline">
+              <a href="https://supportcraft.aakasa.dev/settings/api" target="_blank" rel="noopener noreferrer" className="underline">
                 SupportCraft → Settings → API
               </a>. Use <code className="rounded bg-muted px-1">mock_demo</code> to test without a real account.
             </p>
@@ -219,7 +219,7 @@ export function SupportCraftSettingsClient({
           <div className="space-y-1.5">
             <Label htmlFor="sc-api-url">API URL <span className="font-normal text-muted-foreground">(optional)</span></Label>
             <Input id="sc-api-url" type="url" value={apiUrl} onChange={(e) => setApiUrl(e.target.value)}
-              placeholder="https://app.supportcraft.ai/api" />
+              placeholder="https://supportcraft.aakasa.dev/api/v1" />
           </div>
 
           {testResult && (

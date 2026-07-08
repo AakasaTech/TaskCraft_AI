@@ -179,7 +179,7 @@ export default async function InvoicesPage() {
                   </td>
                   <td className="px-4 py-3">
                     <a
-                      href={`https://app.billcraft.ai/invoices/${inv.billcraft_invoice_id}`}
+                      href={`https://billcraft.aakasa.dev/invoices/${inv.billcraft_invoice_id}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="rounded-lg p-1.5 text-muted-foreground hover:text-foreground transition-colors inline-flex"

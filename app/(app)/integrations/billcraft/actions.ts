@@ -29,7 +29,7 @@ export async function saveBillCraftSettings(formData: {
 
   const config = {
     api_key: formData.api_key.trim(),
-    api_url: formData.api_url.trim() || 'https://app.billcraft.ai/api',
+    api_url: formData.api_url.trim() || 'https://billcraft.aakasa.dev/api/v1',
   };
 
   const { error } = await supabase
@@ -49,11 +49,18 @@ export async function saveBillCraftSettings(formData: {
   return { data: { ok: true } };
 }
 
-export async function testBillCraftConnection() {
+export async function testBillCraftConnection(apiKey?: string, apiUrl?: string) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { error: 'Unauthorized' };
 
+  // If called with explicit values (pre-save test), use those directly
+  if (apiKey) {
+    const svc = new BillCraftService(apiKey, apiUrl || 'https://billcraft.aakasa.dev/api/v1');
+    return svc.testConnection();
+  }
+
+  // Otherwise fall back to saved settings
   const workspaceId = await getWorkspaceId(user.id);
   if (!workspaceId) return { error: 'No workspace found' };
 
