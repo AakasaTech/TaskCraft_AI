@@ -1,6 +1,46 @@
 // BillCraft AI integration service
 // Uses a mock implementation when api_key starts with "mock_" or is empty.
-// Replace mock branches with real fetch calls once BillCraft publishes its API.
+// Uses node:https (not fetch/undici) for all real HTTP calls — avoids premature-close issues.
+
+import https from 'node:https'
+
+// Low-level node:https request helper — bypasses undici/fetch entirely
+function httpsRequest(
+  method: 'GET' | 'POST',
+  url: string,
+  headers: Record<string, string>,
+  body?: string,
+  timeoutMs = 10_000,
+): Promise<{ status: number; json: () => Promise<unknown> }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url)
+    const options: https.RequestOptions = {
+      hostname: u.hostname,
+      port:     u.port || 443,
+      path:     u.pathname + u.search,
+      method,
+      headers:  body
+        ? { ...headers, 'Content-Length': String(Buffer.byteLength(body)) }
+        : headers,
+      agent: new https.Agent({ keepAlive: false }),
+    }
+    const req = https.request(options, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString()
+        resolve({
+          status: res.statusCode ?? 0,
+          json: () => Promise.resolve(JSON.parse(text)),
+        })
+      })
+    })
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('Request timeout')) })
+    req.on('error', reject)
+    if (body) req.write(body)
+    req.end()
+  })
+}
 
 export interface BillCraftWorkspace {
   id:       string;
@@ -91,15 +131,12 @@ export class BillCraftService {
       return { ok: true, workspace: { id: 'mock-ws-1', name: 'Demo Workspace (Mock)', currency: 'USD' } };
     }
     try {
-      const res = await fetch(`${this.baseUrl}/v1/workspace`, {
-        headers: this.headers(),
-        signal: AbortSignal.timeout(8_000),
-      });
-      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
-      const data = await res.json();
-      return { ok: true, workspace: data.workspace ?? data };
+      const res = await httpsRequest('GET', `${this.baseUrl}/v1/workspace`, this.headers())
+      if (res.status !== 200) return { ok: false, error: `HTTP ${res.status}` }
+      const data = await res.json() as { workspace?: BillCraftWorkspace }
+      return { ok: true, workspace: data.workspace ?? (data as unknown as BillCraftWorkspace) }
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : 'Connection failed' };
+      return { ok: false, error: err instanceof Error ? err.message : 'Connection failed' }
     }
   }
 
@@ -108,13 +145,10 @@ export class BillCraftService {
       await delay(300);
       return MOCK_CLIENTS;
     }
-    const res = await fetch(`${this.baseUrl}/v1/clients`, {
-      headers: this.headers(),
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!res.ok) throw new Error(`BillCraft API error: ${res.status}`);
-    const data = await res.json();
-    return (data.data ?? data) as BillCraftClient[];
+    const res = await httpsRequest('GET', `${this.baseUrl}/v1/clients`, this.headers())
+    if (res.status !== 200) throw new Error(`BillCraft API error: ${res.status}`)
+    const data = await res.json() as { data?: BillCraftClient[] }
+    return (data.data ?? data) as BillCraftClient[]
   }
 
   async getProjects(): Promise<BillCraftProject[]> {
@@ -122,13 +156,10 @@ export class BillCraftService {
       await delay(300);
       return MOCK_PROJECTS;
     }
-    const res = await fetch(`${this.baseUrl}/v1/projects`, {
-      headers: this.headers(),
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!res.ok) throw new Error(`BillCraft API error: ${res.status}`);
-    const data = await res.json();
-    return (data.data ?? data) as BillCraftProject[];
+    const res = await httpsRequest('GET', `${this.baseUrl}/v1/projects`, this.headers())
+    if (res.status !== 200) throw new Error(`BillCraft API error: ${res.status}`)
+    const data = await res.json() as { data?: BillCraftProject[] }
+    return (data.data ?? data) as BillCraftProject[]
   }
 
   async createInvoice(payload: CreateInvoicePayload): Promise<BillCraftInvoice> {
@@ -145,18 +176,18 @@ export class BillCraftService {
         total,
         currency:   payload.currency,
         created_at: new Date().toISOString(),
-        url:        `https://app.billcraft.ai/invoices/${num}`,
+        url:        `https://billcraft.aakasa.dev/invoices/${num}`,
       };
     }
-    const res = await fetch(`${this.baseUrl}/v1/invoices`, {
-      method:  'POST',
-      headers: { ...this.headers(), 'Content-Type': 'application/json' },
-      body:    JSON.stringify(payload),
-      signal:  AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) throw new Error(`BillCraft API error: ${res.status}`);
-    const data = await res.json();
-    return (data.data ?? data) as BillCraftInvoice;
+    const body = JSON.stringify(payload)
+    const res = await httpsRequest(
+      'POST', `${this.baseUrl}/v1/invoices`,
+      { ...this.headers(), 'Content-Type': 'application/json' },
+      body, 15_000,
+    )
+    if (res.status !== 201 && res.status !== 200) throw new Error(`BillCraft API error: ${res.status}`)
+    const data = await res.json() as { data?: BillCraftInvoice }
+    return (data.data ?? data) as BillCraftInvoice
   }
 
   private headers() {
