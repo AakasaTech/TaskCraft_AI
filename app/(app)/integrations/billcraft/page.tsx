@@ -45,12 +45,11 @@ export default async function BillCraftIntegrationPage() {
         .single()
     : { data: null };
 
-  const cfg          = (settings?.config ?? {}) as Record<string, string>;
-  const connected    = settings?.enabled ?? false;
-  const apiKey       = cfg.api_key ?? '';
-  const apiUrl       = cfg.api_url ?? '';
+  const cfg             = (settings?.config ?? {}) as Record<string, string>;
+  const connected       = settings?.enabled ?? false;
+  const apiKey          = cfg.api_key ?? '';
+  const apiUrl          = cfg.api_url ?? '';
   const lastClientSync  = cfg.last_client_sync_at ?? null;
-  const lastProjectSync = cfg.last_project_sync_at ?? null;
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -73,7 +72,6 @@ export default async function BillCraftIntegrationPage() {
         apiKey={apiKey}
         apiUrl={apiUrl}
         lastClientSync={lastClientSync}
-        lastProjectSync={lastProjectSync}
       />
     </div>
   );

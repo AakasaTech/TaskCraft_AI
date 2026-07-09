@@ -101,7 +101,23 @@ export async function syncBillCraftClients() {
   try {
     const clients = await svc.getClients();
 
-    // Update last sync timestamp in config
+    if (clients.length > 0) {
+      const rows = clients.map((c) => ({
+        workspace_id:       workspaceId,
+        billcraft_client_id: c.id,
+        name:               c.name,
+        email:              c.email ?? null,
+        company:            c.company ?? null,
+        created_by:         user.id,
+      }));
+
+      const { error: upsertErr } = await supabase
+        .from('clients')
+        .upsert(rows, { onConflict: 'workspace_id,billcraft_client_id', ignoreDuplicates: false });
+
+      if (upsertErr) return { error: upsertErr.message };
+    }
+
     await supabase
       .from('integration_settings')
       .update({
@@ -111,43 +127,6 @@ export async function syncBillCraftClients() {
       .eq('integration_type', 'billcraft');
 
     return { data: { count: clients.length } };
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : 'Sync failed' };
-  }
-}
-
-export async function syncBillCraftProjects() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
-
-  const workspaceId = await getWorkspaceId(user.id);
-  if (!workspaceId) return { error: 'No workspace found' };
-
-  const { data: settings } = await supabase
-    .from('integration_settings')
-    .select('config')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'billcraft')
-    .single();
-
-  if (!settings) return { error: 'BillCraft not configured' };
-
-  const cfg = settings.config as { api_key?: string; api_url?: string };
-  const svc = new BillCraftService(cfg.api_key ?? '', cfg.api_url);
-
-  try {
-    const projects = await svc.getProjects();
-
-    await supabase
-      .from('integration_settings')
-      .update({
-        config: { ...cfg, last_project_sync_at: new Date().toISOString() },
-      })
-      .eq('workspace_id', workspaceId)
-      .eq('integration_type', 'billcraft');
-
-    return { data: { count: projects.length } };
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Sync failed' };
   }

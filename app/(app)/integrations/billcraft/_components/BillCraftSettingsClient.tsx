@@ -12,16 +12,14 @@ import {
   saveBillCraftSettings,
   testBillCraftConnection,
   syncBillCraftClients,
-  syncBillCraftProjects,
   disconnectBillCraft,
 } from '../actions';
 
 interface Props {
-  connected:          boolean;
-  apiKey:             string;
-  apiUrl:             string;
-  lastClientSync:     string | null;
-  lastProjectSync:    string | null;
+  connected:       boolean;
+  apiKey:          string;
+  apiUrl:          string;
+  lastClientSync:  string | null;
 }
 
 function SyncRow({
@@ -55,20 +53,18 @@ function SyncRow({
 
 export function BillCraftSettingsClient({
   connected,
-  apiKey:     initialKey,
-  apiUrl:     initialUrl,
+  apiKey:        initialKey,
+  apiUrl:        initialUrl,
   lastClientSync,
-  lastProjectSync,
 }: Props) {
   const router = useRouter();
   const [apiKey,   setApiKey]   = useState(initialKey);
   const [apiUrl,   setApiUrl]   = useState(initialUrl || 'https://billcraft.aakasa.dev/api');
   const [testResult, setTestResult] = useState<{ ok: boolean; name?: string } | null>(null);
 
-  const [isSaving,      startSave]      = useTransition();
-  const [isTesting,     startTest]      = useTransition();
-  const [isSyncClients, startSyncCli]   = useTransition();
-  const [isSyncProjects,startSyncProj]  = useTransition();
+  const [isSaving,        startSave]    = useTransition();
+  const [isTesting,       startTest]    = useTransition();
+  const [isSyncClients,   startSyncCli] = useTransition();
   const [isDisconnecting, startDisconn] = useTransition();
 
   function handleSave() {
@@ -104,18 +100,6 @@ export function BillCraftSettingsClient({
         toast.error(res.error);
       } else {
         toast.success(`Synced ${res.data?.count} clients from BillCraft`);
-        router.refresh();
-      }
-    });
-  }
-
-  function handleSyncProjects() {
-    startSyncProj(async () => {
-      const res = await syncBillCraftProjects();
-      if (res?.error) {
-        toast.error(res.error);
-      } else {
-        toast.success(`Synced ${res.data?.count} projects from BillCraft`);
         router.refresh();
       }
     });
@@ -239,19 +223,13 @@ export function BillCraftSettingsClient({
 
       {/* Sync */}
       {connected && (
-        <SettingsSection title="Data Sync" description="Pull the latest clients and projects from BillCraft so the invoice wizard stays up to date.">
+        <SettingsSection title="Data Sync" description="Pull the latest clients from BillCraft so the invoice wizard stays up to date.">
           <div className="rounded-xl border border-border divide-y divide-border overflow-hidden">
             <SyncRow
               label="Clients"
               lastSync={lastClientSync}
               onSync={handleSyncClients}
               loading={isSyncClients}
-            />
-            <SyncRow
-              label="Projects"
-              lastSync={lastProjectSync}
-              onSync={handleSyncProjects}
-              loading={isSyncProjects}
             />
           </div>
         </SettingsSection>
