@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard, FolderKanban, CheckSquare, Clock,
   CalendarDays, BarChart3, Users, Plug, CreditCard,
-  Settings, ChevronLeft, ChevronRight, LogOut, Sparkles, Lock, Receipt, UsersRound,
+  Settings, ChevronLeft, ChevronRight, LogOut, Sparkles, Lock, Receipt, UsersRound, HelpCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
@@ -56,10 +56,11 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Account',
     items: [
-      { href: '/team',             label: 'Team',         icon: UsersRound, minPlan: 'team' },
-      { href: '/integrations',     label: 'Integrations', icon: Plug,       minPlan: 'solo' },
-      { href: '/settings/billing', label: 'Billing',      icon: CreditCard, minPlan: 'free' },
-      { href: '/settings',         label: 'Settings',     icon: Settings,   minPlan: 'free' },
+      { href: '/team',             label: 'Team',         icon: UsersRound,  minPlan: 'team' },
+      { href: '/integrations',     label: 'Integrations', icon: Plug,        minPlan: 'solo' },
+      { href: '/settings/billing', label: 'Billing',      icon: CreditCard,  minPlan: 'free' },
+      { href: '/settings',         label: 'Settings',     icon: Settings,    minPlan: 'free' },
+      { href: '/help',             label: 'Help',         icon: HelpCircle,  minPlan: 'free' },
     ],
   },
 ];
