@@ -4,6 +4,8 @@ import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { TeamClient } from './_components/TeamClient';
+import { getEffectivePlan } from '@/lib/plan-gates';
+import type { Plan } from '@/lib/types';
 
 export const metadata: Metadata = { title: 'Team Management' };
 
@@ -14,11 +16,12 @@ export default async function TeamPage() {
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('plan')
+    .select('plan, plan_expires_at')
     .eq('id', user.id)
     .single();
 
-  if (profile?.plan !== 'team') {
+  const effectivePlan = getEffectivePlan((profile?.plan ?? 'free') as Plan, profile?.plan_expires_at ?? null);
+  if (effectivePlan !== 'team') {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 text-center px-4">
         <div className="rounded-2xl border border-border bg-card p-8 max-w-md w-full">

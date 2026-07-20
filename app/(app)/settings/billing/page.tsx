@@ -4,6 +4,7 @@ import { PageHeader } from '@/components/shared/PageHeader';
 import { SettingsSection } from '@/components/shared/SettingsSection';
 import { BillingClient } from './_components/BillingClient';
 import type { Plan } from '@/lib/types';
+import { getEffectivePlan } from '@/lib/plan-gates';
 
 export const metadata: Metadata = { title: 'Billing' };
 
@@ -28,8 +29,8 @@ export default async function BillingPage() {
       .maybeSingle(),
   ]);
 
-  const currentPlan    = (profileRes.data?.plan ?? 'free') as Plan;
   const planExpiresAt  = profileRes.data?.plan_expires_at ?? null;
+  const currentPlan    = getEffectivePlan((profileRes.data?.plan ?? 'free') as Plan, planExpiresAt);
   const subscription   = subRes.data;
 
   return (

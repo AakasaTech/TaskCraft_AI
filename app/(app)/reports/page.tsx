@@ -5,6 +5,8 @@ import { PageHeader } from '@/components/shared/PageHeader';
 import { ReportsClient } from './_components/ReportsClient';
 import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
 import type { ReportTimeEntry, ReportProject, ReportTask, ReportMember } from './_types';
+import { getEffectivePlan } from '@/lib/plan-gates';
+import type { Plan } from '@/lib/types';
 
 export const metadata: Metadata = { title: 'Reports' };
 
@@ -24,7 +26,7 @@ export default async function ReportsPage() {
       .maybeSingle(),
     supabase
       .from('profiles')
-      .select('plan')
+      .select('plan, plan_expires_at')
       .eq('id', user.id)
       .single(),
   ]);
@@ -33,7 +35,7 @@ export default async function ReportsPage() {
   const wid = memberRes.data.workspace_id;
 
   // Gate: Reports require Solo or Team plan
-  const userPlan = profileRes.data?.plan ?? 'free';
+  const userPlan = getEffectivePlan((profileRes.data?.plan ?? 'free') as Plan, profileRes.data?.plan_expires_at ?? null);
   if (userPlan === 'free') {
     return (
       <div className="space-y-6 animate-fade-in">

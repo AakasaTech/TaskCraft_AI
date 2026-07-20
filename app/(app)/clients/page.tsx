@@ -5,6 +5,8 @@ import { PageHeader } from '@/components/shared/PageHeader';
 import { ClientList } from './_components/ClientList';
 import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
 import type { ClientWithStats } from './_components/ClientList';
+import { getEffectivePlan } from '@/lib/plan-gates';
+import type { Plan } from '@/lib/types';
 
 export const metadata: Metadata = { title: 'Clients' };
 
@@ -23,13 +25,13 @@ export default async function ClientsPage() {
       .maybeSingle(),
     supabase
       .from('profiles')
-      .select('plan')
+      .select('plan, plan_expires_at')
       .eq('id', user.id)
       .single(),
   ]);
 
   // Gate: Clients require Solo or Team plan
-  const userPlan = profileRes.data?.plan ?? 'free';
+  const userPlan = getEffectivePlan((profileRes.data?.plan ?? 'free') as Plan, profileRes.data?.plan_expires_at ?? null);
   if (userPlan === 'free') {
     return (
       <div className="space-y-6 animate-fade-in">

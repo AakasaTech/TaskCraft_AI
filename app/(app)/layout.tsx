@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { AppShell } from '@/components/shared/AppShell';
+import { getEffectivePlan } from '@/lib/plan-gates';
 import type { RunningTimer } from '@/app/(app)/time/_types';
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -10,7 +11,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (!user) redirect('/login');
 
   const [profileRes, memberRes] = await Promise.all([
-    supabase.from('profiles').select('full_name, avatar_url, plan').eq('id', user.id).single(),
+    supabase.from('profiles').select('full_name, avatar_url, plan, plan_expires_at').eq('id', user.id).single(),
     supabase.from('workspace_members').select('workspace_id').eq('user_id', user.id).single(),
   ]);
 
@@ -45,7 +46,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <AppShell
-      user={{ ...profileRes.data, email: user.email }}
+      user={{
+        ...profileRes.data,
+        email: user.email,
+        plan:  getEffectivePlan(
+          (profileRes.data?.plan ?? 'free') as import('@/lib/types').Plan,
+          profileRes.data?.plan_expires_at ?? null,
+        ),
+      }}
       userId={user.id}
       runningTimer={runningTimer}
     >

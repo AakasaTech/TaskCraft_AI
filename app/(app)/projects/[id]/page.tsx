@@ -7,6 +7,7 @@ import { ProjectStatusBadge } from '@/components/shared/StatusBadge';
 import { ProjectDetailClient } from './_components/ProjectDetailClient';
 import type { DetailTask, DetailTimeEntry, DetailMember } from './_components/ProjectDetailClient';
 import type { TaskStatus, TaskPriority, ProjectMemberRole, ProjectStatus } from '@/lib/types';
+import { getEffectivePlan } from '@/lib/plan-gates';
 
 export async function generateMetadata({
   params,
@@ -40,13 +41,14 @@ export default async function ProjectDetailPage({
       .maybeSingle(),
     supabase
       .from('profiles')
-      .select('plan')
+      .select('plan, plan_expires_at')
       .eq('id', user.id)
       .single(),
   ]);
 
   const wid = memberRes.data?.workspace_id;
-  const isTeamPlan = profileRes.data?.plan === 'team';
+  const effectivePlan = getEffectivePlan((profileRes.data?.plan ?? 'free') as import('@/lib/types').Plan, profileRes.data?.plan_expires_at ?? null);
+  const isTeamPlan = effectivePlan === 'team';
 
   // Core project
   const { data: project } = await supabase

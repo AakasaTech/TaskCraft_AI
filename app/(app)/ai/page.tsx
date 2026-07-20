@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { AIHub } from './_components/AIHub';
 import type { Plan } from '@/lib/types';
+import { getEffectivePlan } from '@/lib/plan-gates';
 
 export const metadata: Metadata = { title: 'AI Assistant' };
 
@@ -13,11 +14,11 @@ export default async function AIPage() {
   if (!user) redirect('/login');
 
   const [profileRes, memberRes] = await Promise.all([
-    supabase.from('profiles').select('plan, full_name').eq('id', user.id).single(),
+    supabase.from('profiles').select('plan, plan_expires_at, full_name').eq('id', user.id).single(),
     supabase.from('workspace_members').select('workspace_id').eq('user_id', user.id).single(),
   ]);
 
-  const plan = (profileRes.data?.plan ?? 'free') as Plan;
+  const plan = getEffectivePlan((profileRes.data?.plan ?? 'free') as Plan, profileRes.data?.plan_expires_at ?? null);
   const wid  = memberRes.data?.workspace_id;
   if (!wid) redirect('/login');
 

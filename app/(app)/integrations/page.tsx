@@ -5,6 +5,8 @@ import { ExternalLink, CheckCircle2, Zap, Settings2 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/server';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
+import { getEffectivePlan } from '@/lib/plan-gates';
+import type { Plan } from '@/lib/types';
 
 export const metadata: Metadata = { title: 'Integrations' };
 
@@ -35,13 +37,13 @@ export default async function IntegrationsPage() {
   if (!user) redirect('/login');
 
   const [profileRes, intSettingsRes] = await Promise.all([
-    supabase.from('profiles').select('plan').eq('id', user.id).single(),
+    supabase.from('profiles').select('plan, plan_expires_at').eq('id', user.id).single(),
     supabase.from('integration_settings')
       .select('integration_type, enabled')
       .in('integration_type', ['billcraft', 'supportcraft']),
   ]);
 
-  const userPlan = profileRes.data?.plan ?? 'free';
+  const userPlan = getEffectivePlan((profileRes.data?.plan ?? 'free') as Plan, profileRes.data?.plan_expires_at ?? null);
 
   const connectedMap: Record<string, boolean> = {};
   for (const s of intSettingsRes.data ?? []) {

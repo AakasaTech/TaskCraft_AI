@@ -6,6 +6,8 @@ import { createClient } from '@/lib/supabase/server';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
 import { SupportCraftSettingsClient } from './_components/SupportCraftSettingsClient';
+import { getEffectivePlan } from '@/lib/plan-gates';
+import type { Plan } from '@/lib/types';
 
 export const metadata: Metadata = { title: 'SupportCraft AI Integration' };
 
@@ -15,7 +17,7 @@ export default async function SupportCraftIntegrationPage() {
   if (!user) redirect('/login');
 
   const [profileRes, memberRes] = await Promise.all([
-    supabase.from('profiles').select('plan').eq('id', user.id).single(),
+    supabase.from('profiles').select('plan, plan_expires_at').eq('id', user.id).single(),
     supabase.from('workspace_members')
       .select('workspace_id, role')
       .eq('user_id', user.id)
@@ -24,7 +26,7 @@ export default async function SupportCraftIntegrationPage() {
       .single(),
   ]);
 
-  const userPlan    = profileRes.data?.plan ?? 'free';
+  const userPlan    = getEffectivePlan((profileRes.data?.plan ?? 'free') as Plan, profileRes.data?.plan_expires_at ?? null);
   const workspaceId = memberRes.data?.workspace_id;
 
   if (userPlan === 'free') {

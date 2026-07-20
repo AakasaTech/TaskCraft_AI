@@ -4,7 +4,8 @@ import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { ApiKeysClient } from './_components/ApiKeysClient';
-import type { ApiKey, Webhook } from '@/lib/types';
+import type { ApiKey, Webhook, Plan } from '@/lib/types';
+import { getEffectivePlan } from '@/lib/plan-gates';
 
 export const metadata: Metadata = { title: 'API & Webhooks' };
 
@@ -21,11 +22,11 @@ export default async function ApiSettingsPage() {
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('plan')
+    .select('plan, plan_expires_at')
     .eq('id', user.id)
     .single();
 
-  const plan = profile?.plan ?? 'free';
+  const plan = getEffectivePlan((profile?.plan ?? 'free') as Plan, profile?.plan_expires_at ?? null);
 
   if (!member?.workspace_id || !['owner', 'admin'].includes(member.role)) {
     return (

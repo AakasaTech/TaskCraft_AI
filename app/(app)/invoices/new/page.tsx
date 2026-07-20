@@ -6,6 +6,8 @@ import { createClient } from '@/lib/supabase/server';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
 import { InvoiceWizard } from './_components/InvoiceWizard';
+import { getEffectivePlan } from '@/lib/plan-gates';
+import type { Plan } from '@/lib/types';
 
 export const metadata: Metadata = { title: 'New Invoice' };
 
@@ -16,11 +18,11 @@ export default async function NewInvoicePage() {
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('plan')
+    .select('plan, plan_expires_at')
     .eq('id', user.id)
     .single();
 
-  const userPlan = profile?.plan ?? 'free';
+  const userPlan = getEffectivePlan((profile?.plan ?? 'free') as Plan, profile?.plan_expires_at ?? null);
 
   if (userPlan === 'free') {
     return (

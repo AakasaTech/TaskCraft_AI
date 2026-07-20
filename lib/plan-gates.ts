@@ -1,6 +1,11 @@
 import type { Plan } from './types';
 import { PLANS } from './constants';
 
+export function getEffectivePlan(plan: Plan, planExpiresAt: string | null): Plan {
+  if (planExpiresAt && new Date(planExpiresAt) < new Date()) return 'free';
+  return plan;
+}
+
 // ── Feature keys ─────────────────────────────────────────────────────────────
 
 export type PlanFeature =

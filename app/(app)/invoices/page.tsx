@@ -8,6 +8,8 @@ import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { Button } from '@/components/ui/button';
 import type { InvoiceSync } from '@/lib/types';
+import { getEffectivePlan } from '@/lib/plan-gates';
+import type { Plan } from '@/lib/types';
 
 export const metadata: Metadata = { title: 'Invoices' };
 
@@ -40,11 +42,11 @@ export default async function InvoicesPage() {
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('plan')
+    .select('plan, plan_expires_at')
     .eq('id', user.id)
     .single();
 
-  const userPlan = profile?.plan ?? 'free';
+  const userPlan = getEffectivePlan((profile?.plan ?? 'free') as Plan, profile?.plan_expires_at ?? null);
 
   if (userPlan === 'free') {
     return (

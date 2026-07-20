@@ -2,8 +2,9 @@
 
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
-import type { ProjectStatus, ProjectMemberRole } from '@/lib/types';
+import type { ProjectStatus, ProjectMemberRole, Plan } from '@/lib/types';
 import { PLANS } from '@/lib/constants';
+import { getEffectivePlan } from '@/lib/plan-gates';
 
 export interface ProjectInput {
   name: string;
@@ -45,11 +46,11 @@ export async function createProject(input: ProjectInput) {
   // Enforce plan project limit
   const { data: profile } = await supabase
     .from('profiles')
-    .select('plan')
+    .select('plan, plan_expires_at')
     .eq('id', user.id)
     .single();
 
-  const planKey = (profile?.plan ?? 'free') as keyof typeof PLANS;
+  const planKey = getEffectivePlan((profile?.plan ?? 'free') as Plan, profile?.plan_expires_at ?? null) as keyof typeof PLANS;
   const limit: number = PLANS[planKey].max_projects;
 
   if (limit !== -1) {

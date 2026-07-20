@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { callOpenAI } from '@/lib/ai';
+import { getEffectivePlan } from '@/lib/plan-gates';
 
 // ── Plan access matrix ──────────────────────────────────────────────────────
 const FREE_MONTHLY_LIMIT = 5;
@@ -345,11 +346,11 @@ export async function POST(req: NextRequest) {
 
     // Get user plan + workspace
     const [profileRes, memberRes] = await Promise.all([
-      supabase.from('profiles').select('plan').eq('id', user.id).single(),
+      supabase.from('profiles').select('plan, plan_expires_at').eq('id', user.id).single(),
       supabase.from('workspace_members').select('workspace_id').eq('user_id', user.id).single(),
     ]);
 
-    const plan = (profileRes.data?.plan ?? 'free') as 'free' | 'solo' | 'team';
+    const plan = getEffectivePlan((profileRes.data?.plan ?? 'free') as 'free' | 'solo' | 'team', profileRes.data?.plan_expires_at ?? null);
     const wid  = memberRes.data?.workspace_id;
     if (!wid) return NextResponse.json({ error: 'No workspace found.' }, { status: 400 });
 

@@ -8,6 +8,7 @@ import type { ProjectRow } from './_components/ProjectsClient';
 import type { ProjectStatus } from '@/lib/types';
 import { PLANS } from '@/lib/constants';
 import type { Plan } from '@/lib/types';
+import { getEffectivePlan } from '@/lib/plan-gates';
 
 export const metadata: Metadata = { title: 'Projects' };
 
@@ -39,7 +40,7 @@ export default async function ProjectsPage() {
 
   // Fetch profile plan in parallel with project data
   const [profileRes, projectsRes, taskStatsRes, timeRes, clientsRes] = await Promise.all([
-    supabase.from('profiles').select('plan').eq('id', user.id).single(),
+    supabase.from('profiles').select('plan, plan_expires_at').eq('id', user.id).single(),
     supabase
       .from('projects')
       .select('id, name, description, color, status, client_id, start_date, due_date, budget, hourly_rate, billable, clients(name, company)')
@@ -109,7 +110,7 @@ export default async function ProjectsPage() {
     id: c.id as string, name: c.name as string, company: c.company as string | null,
   }));
 
-  const plan          = (profileRes.data?.plan ?? 'free') as Plan;
+  const plan          = getEffectivePlan((profileRes.data?.plan ?? 'free') as Plan, profileRes.data?.plan_expires_at ?? null);
   const projectLimit: number = PLANS[plan].max_projects;
   const activeCount   = projects.filter((p) => p.status !== 'archived').length;
   const atLimit       = projectLimit !== -1 && activeCount >= projectLimit;

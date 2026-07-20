@@ -4,6 +4,8 @@ import { createClient } from '@/lib/supabase/server';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { SettingsSection } from '@/components/shared/SettingsSection';
 import { DataExportClient } from './_components/DataExportClient';
+import { getEffectivePlan } from '@/lib/plan-gates';
+import type { Plan } from '@/lib/types';
 
 export const metadata: Metadata = { title: 'Data Export' };
 
@@ -14,11 +16,11 @@ export default async function DataExportPage() {
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('plan')
+    .select('plan, plan_expires_at')
     .eq('id', user.id)
     .single();
 
-  const plan = profile?.plan ?? 'free';
+  const plan = getEffectivePlan((profile?.plan ?? 'free') as Plan, profile?.plan_expires_at ?? null);
 
   return (
     <div className="space-y-6 animate-fade-in">
