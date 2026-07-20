@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { AppShell } from '@/components/shared/AppShell';
 import { getEffectivePlan } from '@/lib/plan-gates';
+import { SessionTimeout } from '@/components/shared/SessionTimeout';
 import type { RunningTimer } from '@/app/(app)/time/_types';
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -45,19 +46,22 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <AppShell
-      user={{
-        ...profileRes.data,
-        email: user.email,
-        plan:  getEffectivePlan(
-          (profileRes.data?.plan ?? 'free') as import('@/lib/types').Plan,
-          profileRes.data?.plan_expires_at ?? null,
-        ),
-      }}
-      userId={user.id}
-      runningTimer={runningTimer}
-    >
-      {children}
-    </AppShell>
+    <>
+      <SessionTimeout />
+      <AppShell
+        user={{
+          ...profileRes.data,
+          email: user.email,
+          plan:  getEffectivePlan(
+            (profileRes.data?.plan ?? 'free') as import('@/lib/types').Plan,
+            profileRes.data?.plan_expires_at ?? null,
+          ),
+        }}
+        userId={user.id}
+        runningTimer={runningTimer}
+      >
+        {children}
+      </AppShell>
+    </>
   );
 }
