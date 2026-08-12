@@ -11,9 +11,9 @@ export function SessionTimeout() {
   const router   = useRouter();
   const [warning,   setWarning]   = useState(false);
   const [countdown, setCountdown] = useState(Math.round(WARN_MS / 1000));
-  const idleRef  = useRef<ReturnType<typeof setTimeout>>();
-  const warnRef  = useRef<ReturnType<typeof setTimeout>>();
-  const tickRef  = useRef<ReturnType<typeof setInterval>>();
+  const idleRef  = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const warnRef  = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const tickRef  = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   const signOut = useCallback(async () => {
     clearTimeout(idleRef.current);
