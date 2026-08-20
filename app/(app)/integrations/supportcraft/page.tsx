@@ -2,7 +2,8 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { ChevronLeft } from 'lucide-react';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getCurrentUser } from '@/lib/auth/helpers';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
 import { SupportCraftSettingsClient } from './_components/SupportCraftSettingsClient';
@@ -12,22 +13,11 @@ import type { Plan } from '@/lib/types';
 export const metadata: Metadata = { title: 'SupportCraft AI Integration' };
 
 export default async function SupportCraftIntegrationPage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  const [profileRes, memberRes] = await Promise.all([
-    supabase.from('profiles').select('plan, plan_expires_at').eq('id', user.id).single(),
-    supabase.from('workspace_members')
-      .select('workspace_id, role')
-      .eq('user_id', user.id)
-      .in('role', ['owner', 'admin'])
-      .limit(1)
-      .single(),
-  ]);
-
-  const userPlan    = getEffectivePlan((profileRes.data?.plan ?? 'free') as Plan, profileRes.data?.plan_expires_at ?? null);
-  const workspaceId = memberRes.data?.workspace_id;
+  const userPlan    = getEffectivePlan(currentUser.profile.plan as Plan, currentUser.profile.planExpiresAt?.toISOString() ?? null);
+  const workspaceId = currentUser.workspace.id;
 
   if (userPlan === 'free') {
     return (
@@ -38,25 +28,20 @@ export default async function SupportCraftIntegrationPage() {
     );
   }
 
-  const [settingsRes, projectsRes] = await Promise.all([
-    workspaceId
-      ? supabase.from('integration_settings')
-          .select('enabled, config')
-          .eq('workspace_id', workspaceId)
-          .eq('integration_type', 'supportcraft')
-          .single()
-      : Promise.resolve({ data: null }),
-    workspaceId
-      ? supabase.from('projects')
-          .select('id, name')
-          .eq('workspace_id', workspaceId)
-          .in('status', ['active', 'not_started'])
-          .order('name')
-      : Promise.resolve({ data: [] }),
+  const [settings, projects] = await Promise.all([
+    prisma.integrationSetting.findUnique({
+      where: { workspaceId_integrationType: { workspaceId, integrationType: 'supportcraft' } },
+      select: { enabled: true, config: true },
+    }),
+    prisma.project.findMany({
+      where: { workspaceId, status: { in: ['active', 'not_started'] } },
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
+    }),
   ]);
 
-  const cfg              = (settingsRes.data?.config ?? {}) as Record<string, unknown>;
-  const connected        = settingsRes.data?.enabled ?? false;
+  const cfg              = (settings?.config ?? {}) as Record<string, unknown>;
+  const connected        = settings?.enabled ?? false;
   const apiKey           = (cfg.api_key           as string  | undefined) ?? '';
   const apiUrl           = (cfg.api_url           as string  | undefined) ?? '';
   const webhookSecret    = (cfg.webhook_secret    as string  | undefined) ?? '';
@@ -89,8 +74,8 @@ export default async function SupportCraftIntegrationPage() {
         defaultProjectId={defaultProjectId}
         syncStatusBack={syncStatusBack}
         appUrl={appUrl}
-        workspaceId={workspaceId ?? ''}
-        projects={(projectsRes.data ?? []) as { id: string; name: string }[]}
+        workspaceId={workspaceId}
+        projects={projects}
       />
     </div>
   );

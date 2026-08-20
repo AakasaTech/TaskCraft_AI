@@ -20,8 +20,8 @@ const securityHeaders = [
       "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.paypal.com https://www.paypalobjects.com https://fonts.googleapis.com",
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' https://fonts.gstatic.com",
-      "img-src 'self' data: blob: https://*.supabase.co https://www.paypal.com https://www.paypalobjects.com",
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api-m.paypal.com https://api.openai.com https://fonts.googleapis.com",
+      "img-src 'self' data: blob: https://*.googleusercontent.com https://*.s3.amazonaws.com https://*.r2.dev https://www.paypal.com https://www.paypalobjects.com",
+      "connect-src 'self' https://api-m.paypal.com https://api.openai.com https://fonts.googleapis.com https://*.s3.amazonaws.com",
       "frame-src https://www.paypal.com https://www.sandbox.paypal.com",
       "object-src 'none'",
       "base-uri 'self'",
@@ -34,7 +34,9 @@ const nextConfig: NextConfig = {
   output: 'standalone',
   images: {
     remotePatterns: [
-      { protocol: 'https', hostname: '*.supabase.co' },
+      { protocol: 'https', hostname: '*.googleusercontent.com' },
+      { protocol: 'https', hostname: '*.amazonaws.com' },
+      { protocol: 'https', hostname: '*.r2.dev' },
     ],
   },
   async headers() {
@@ -45,7 +47,6 @@ const nextConfig: NextConfig = {
       },
     ];
   },
-  // Silence known benign warnings
   logging: {
     fetches: { fullUrl: false },
   },

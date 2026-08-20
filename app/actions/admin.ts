@@ -1,8 +1,8 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { prisma } from '@/lib/prisma'
+import { getAuthUser } from '@/lib/auth/helpers'
 import type { Plan } from '@/lib/types'
 
 type Result = { error?: string; success?: boolean }
@@ -10,8 +10,7 @@ type Result = { error?: string; success?: boolean }
 // ─── Auth guard ───────────────────────────────────────────────────────────────
 
 async function verifyAdmin(): Promise<void> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getAuthUser()
   const adminEmails = (process.env.ADMIN_EMAILS ?? '')
     .split(',')
     .map((e) => e.trim().toLowerCase())
@@ -26,11 +25,10 @@ async function verifyAdmin(): Promise<void> {
 export async function toggleUserActiveAction(userId: string, shouldBan: boolean): Promise<Result> {
   try {
     await verifyAdmin()
-    const admin = createAdminClient()
-    const { error } = await admin.auth.admin.updateUserById(userId, {
-      ban_duration: shouldBan ? '87660h' : 'none',
+    await prisma.user.update({
+      where: { id: userId },
+      data:  { bannedUntil: shouldBan ? new Date(Date.now() + 87_660 * 60 * 60 * 1000) : null },
     })
-    if (error) return { error: error.message }
     revalidatePath('/admin/users')
     return { success: true }
   } catch (e) {
@@ -48,13 +46,17 @@ export async function lookupUserByEmailAction(email: string): Promise<{
 } | null> {
   try {
     await verifyAdmin()
-    const admin = createAdminClient()
-    const { data } = await admin
-      .from('profiles')
-      .select('id, full_name, plan, plan_expires_at')
-      .ilike('email', email.trim())
-      .maybeSingle()
-    return data as { id: string; full_name: string | null; plan: Plan; plan_expires_at: string | null } | null
+    const profile = await prisma.profile.findFirst({
+      where: { email: { equals: email.trim(), mode: 'insensitive' } },
+      select: { id: true, fullName: true, plan: true, planExpiresAt: true },
+    })
+    if (!profile) return null
+    return {
+      id:              profile.id,
+      full_name:       profile.fullName,
+      plan:            profile.plan as Plan,
+      plan_expires_at: profile.planExpiresAt ? profile.planExpiresAt.toISOString() : null,
+    }
   } catch {
     return null
   }
@@ -69,15 +71,13 @@ export async function grantFreepassAction(
 ): Promise<Result> {
   try {
     await verifyAdmin()
-    const admin = createAdminClient()
     const expiresAt = durationDays
-      ? new Date(Date.now() + durationDays * 86_400_000).toISOString()
+      ? new Date(Date.now() + durationDays * 86_400_000)
       : null
-    const { error } = await admin
-      .from('profiles')
-      .update({ plan, plan_expires_at: expiresAt })
-      .eq('id', userId)
-    if (error) return { error: error.message }
+    await prisma.profile.update({
+      where: { id: userId },
+      data:  { plan, planExpiresAt: expiresAt },
+    })
     revalidatePath('/admin/freepass')
     revalidatePath('/admin/users')
     return { success: true }
@@ -91,21 +91,18 @@ export async function grantFreepassAction(
 export async function extendTrialAction(subscriptionId: string, days: number): Promise<Result> {
   try {
     await verifyAdmin()
-    const admin = createAdminClient()
-    const { data: sub } = await admin
-      .from('subscriptions')
-      .select('trial_ends_at')
-      .eq('id', subscriptionId)
-      .single()
-    const base = sub?.trial_ends_at && new Date(sub.trial_ends_at) > new Date()
-      ? new Date(sub.trial_ends_at)
+    const sub = await prisma.subscription.findUnique({
+      where: { id: subscriptionId },
+      select: { trialEndsAt: true },
+    })
+    const base = sub?.trialEndsAt && sub.trialEndsAt > new Date()
+      ? new Date(sub.trialEndsAt)
       : new Date()
     base.setDate(base.getDate() + days)
-    const { error } = await admin
-      .from('subscriptions')
-      .update({ trial_ends_at: base.toISOString() })
-      .eq('id', subscriptionId)
-    if (error) return { error: error.message }
+    await prisma.subscription.update({
+      where: { id: subscriptionId },
+      data:  { trialEndsAt: base },
+    })
     revalidatePath('/admin/users')
     return { success: true }
   } catch (e) {
@@ -118,12 +115,10 @@ export async function extendTrialAction(subscriptionId: string, days: number): P
 export async function revokeFreepassAction(userId: string): Promise<Result> {
   try {
     await verifyAdmin()
-    const admin = createAdminClient()
-    const { error } = await admin
-      .from('profiles')
-      .update({ plan: 'free', plan_expires_at: null })
-      .eq('id', userId)
-    if (error) return { error: error.message }
+    await prisma.profile.update({
+      where: { id: userId },
+      data:  { plan: 'free', planExpiresAt: null },
+    })
     revalidatePath('/admin/freepass')
     revalidatePath('/admin/users')
     return { success: true }

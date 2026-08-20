@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { prisma } from '@/lib/prisma'
 import { Users, TrendingUp, Activity, DollarSign, Clock } from 'lucide-react'
 
 export const metadata: Metadata = { title: 'Admin — TaskCraft AI', robots: 'noindex, nofollow' }
@@ -9,9 +9,9 @@ function fmt(n: number | null | undefined) {
   return (n ?? 0).toLocaleString()
 }
 
-function fmtDate(d: string | null | undefined) {
+function fmtDate(d: Date | null | undefined) {
   if (!d) return '—'
-  return new Date(d).toLocaleDateString('en-US', { dateStyle: 'medium' })
+  return d.toLocaleDateString('en-US', { dateStyle: 'medium' })
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -32,21 +32,20 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export default async function AdminDashboardPage() {
-  const db  = createAdminClient()
   const now = new Date()
 
-  type ProfileRow = { id: string; email: string; full_name: string | null; plan: string; plan_expires_at: string | null; created_at: string }
-  type SubRow     = { user_id: string; status: string; plan_id: string; trial_ends_at: string | null }
-
-  const [profilesRes, subsRes] = await Promise.all([
-    db.from('profiles').select('id, email, full_name, plan, plan_expires_at, created_at').order('created_at', { ascending: false }),
-    db.from('subscriptions').select('user_id, status, plan_id, trial_ends_at').in('status', ['trialing', 'active']),
+  const [profiles, subs] = await Promise.all([
+    prisma.profile.findMany({
+      select: { id: true, userId: true, email: true, fullName: true, plan: true, planExpiresAt: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+    }),
+    prisma.subscription.findMany({
+      where: { status: { in: ['trialing', 'active'] } },
+      select: { userId: true, status: true, planId: true, trialEndsAt: true },
+    }),
   ])
 
-  const profiles = (profilesRes.data ?? []) as ProfileRow[]
-  const subs     = (subsRes.data  ?? []) as SubRow[]
-
-  const subByUser = Object.fromEntries(subs.map((s) => [s.user_id, s]))
+  const subByUser = Object.fromEntries(subs.map((s) => [s.userId, s]))
 
   const totalUsers = profiles.length
   const paidUsers  = profiles.filter((p) => p.plan !== 'free').length
@@ -130,20 +129,20 @@ export default async function AdminDashboardPage() {
               </thead>
               <tbody className="divide-y divide-white/5">
                 {recentUsers.map((u) => {
-                  const sub    = subByUser[u.id]
+                  const sub    = subByUser[u.userId]
                   const status = sub?.status === 'trialing' ? 'trialing' : u.plan
                   return (
                     <tr key={u.id}>
                       <td className="py-2.5">
                         <Link href={`/admin/users/${u.id}`} className="font-medium text-white hover:text-blue-400 transition-colors">
-                          {u.full_name ?? u.email}
+                          {u.fullName ?? u.email}
                         </Link>
-                        {u.full_name && <div className="text-xs text-gray-400">{u.email}</div>}
+                        {u.fullName && <div className="text-xs text-gray-400">{u.email}</div>}
                       </td>
                       <td className="py-2.5">
                         <StatusBadge status={status} />
                       </td>
-                      <td className="py-2.5 text-gray-400">{fmtDate(u.created_at)}</td>
+                      <td className="py-2.5 text-gray-400">{fmtDate(u.createdAt)}</td>
                     </tr>
                   )
                 })}

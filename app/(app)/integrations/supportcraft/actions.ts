@@ -2,26 +2,23 @@
 
 import { randomBytes } from 'node:crypto';
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getCurrentUser } from '@/lib/auth/helpers';
 import { SupportCraftService, TICKET_TO_TASK, type TicketStatus } from '@/lib/supportcraft';
 import { notifySupportTicketTaskCreated } from '@/lib/notifications';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function getContext() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  const { data: member } = await supabase
-    .from('workspace_members')
-    .select('workspace_id, role')
-    .eq('user_id', user.id)
-    .in('role', ['owner', 'admin'])
-    .limit(1)
-    .single();
+  const member = await prisma.workspaceMember.findFirst({
+    where: { userId: currentUser.profile.id, role: { in: ['owner', 'admin'] } },
+    select: { workspaceId: true },
+  });
 
-  return { supabase, user, workspaceId: member?.workspace_id ?? null };
+  return { currentUser, workspaceId: member?.workspaceId ?? null };
 }
 
 // ── Integration settings ──────────────────────────────────────────────────────
@@ -33,18 +30,16 @@ export async function saveSupportCraftSettings(formData: {
   default_project_id:string;
   sync_status_back:  boolean;
 }) {
-  const { supabase, user, workspaceId } = await getContext();
+  const { currentUser, workspaceId } = await getContext();
   if (!workspaceId) return { error: 'No workspace found' };
 
   // Preserve existing webhook_secret if already set
-  const { data: existing } = await supabase
-    .from('integration_settings')
-    .select('config')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'supportcraft')
-    .single();
+  const existing = await prisma.integrationSetting.findUnique({
+    where: { workspaceId_integrationType: { workspaceId, integrationType: 'supportcraft' } },
+    select: { config: true },
+  });
 
-  const existingCfg  = (existing?.config ?? {}) as Record<string, unknown>;
+  const existingCfg   = (existing?.config ?? {}) as Record<string, unknown>;
   const webhookSecret = (existingCfg.webhook_secret as string | undefined)
     ?? randomBytes(24).toString('hex');
 
@@ -57,26 +52,29 @@ export async function saveSupportCraftSettings(formData: {
     sync_status_back:   formData.sync_status_back,
   };
 
-  const { error } = await supabase
-    .from('integration_settings')
-    .upsert(
-      {
-        workspace_id:     workspaceId,
-        integration_type: 'supportcraft',
-        enabled:          !!config.api_key,
+  try {
+    await prisma.integrationSetting.upsert({
+      where: { workspaceId_integrationType: { workspaceId, integrationType: 'supportcraft' } },
+      create: {
+        workspaceId,
+        integrationType: 'supportcraft',
+        enabled:         !!config.api_key,
         config,
-        created_by:       user.id,
+        createdById:     currentUser.profile.id,
       },
-      { onConflict: 'workspace_id,integration_type' },
-    );
-
-  if (error) return { error: error.message };
-  return { data: { ok: true, webhook_secret: webhookSecret } };
+      update: {
+        enabled: !!config.api_key,
+        config,
+      },
+    });
+    return { data: { ok: true, webhook_secret: webhookSecret } };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Failed to save settings' };
+  }
 }
 
 export async function testSupportCraftConnection(apiKey?: string, apiUrl?: string) {
-  const { supabase, workspaceId } = await getContext();
-  if (!workspaceId) return { error: 'No workspace found' };
+  const { workspaceId } = await getContext();
 
   // If called with explicit values (pre-save test), use those directly
   if (apiKey) {
@@ -84,13 +82,13 @@ export async function testSupportCraftConnection(apiKey?: string, apiUrl?: strin
     return svc.testConnection();
   }
 
+  if (!workspaceId) return { error: 'No workspace found' };
+
   // Otherwise fall back to saved settings
-  const { data: settings } = await supabase
-    .from('integration_settings')
-    .select('config')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'supportcraft')
-    .single();
+  const settings = await prisma.integrationSetting.findUnique({
+    where: { workspaceId_integrationType: { workspaceId, integrationType: 'supportcraft' } },
+    select: { config: true },
+  });
 
   if (!settings) return { error: 'SupportCraft not configured' };
 
@@ -100,43 +98,43 @@ export async function testSupportCraftConnection(apiKey?: string, apiUrl?: strin
 }
 
 export async function regenerateWebhookSecret() {
-  const { supabase, workspaceId } = await getContext();
+  const { workspaceId } = await getContext();
   if (!workspaceId) return { error: 'No workspace found' };
 
-  const { data: existing } = await supabase
-    .from('integration_settings')
-    .select('config')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'supportcraft')
-    .single();
+  const existing = await prisma.integrationSetting.findUnique({
+    where: { workspaceId_integrationType: { workspaceId, integrationType: 'supportcraft' } },
+    select: { config: true },
+  });
 
   if (!existing) return { error: 'SupportCraft not configured' };
 
   const newSecret = randomBytes(24).toString('hex');
   const cfg = { ...(existing.config as Record<string, unknown>), webhook_secret: newSecret };
 
-  const { error } = await supabase
-    .from('integration_settings')
-    .update({ config: cfg })
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'supportcraft');
-
-  if (error) return { error: error.message };
-  return { data: { webhook_secret: newSecret } };
+  try {
+    await prisma.integrationSetting.update({
+      where: { workspaceId_integrationType: { workspaceId, integrationType: 'supportcraft' } },
+      data:  { config: cfg },
+    });
+    return { data: { webhook_secret: newSecret } };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Failed to regenerate secret' };
+  }
 }
 
 export async function disconnectSupportCraft() {
-  const { supabase, workspaceId } = await getContext();
+  const { workspaceId } = await getContext();
   if (!workspaceId) return { error: 'No workspace found' };
 
-  const { error } = await supabase
-    .from('integration_settings')
-    .update({ enabled: false, config: {} })
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'supportcraft');
-
-  if (error) return { error: error.message };
-  return { data: { ok: true } };
+  try {
+    await prisma.integrationSetting.update({
+      where: { workspaceId_integrationType: { workspaceId, integrationType: 'supportcraft' } },
+      data:  { enabled: false, config: {} },
+    });
+    return { data: { ok: true } };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Failed to disconnect' };
+  }
 }
 
 // ── Create task from support ticket ──────────────────────────────────────────
@@ -151,16 +149,14 @@ export async function createTaskFromTicket(input: {
   clientName:     string;
   projectId?:     string | null;
 }) {
-  const { supabase, user, workspaceId } = await getContext();
+  const { currentUser, workspaceId } = await getContext();
   if (!workspaceId) return { error: 'No workspace found' };
 
   // Check not already linked
-  const { data: existing } = await supabase
-    .from('support_ticket_links')
-    .select('id, task_id')
-    .eq('workspace_id', workspaceId)
-    .eq('supportcraft_ticket_id', input.ticketId)
-    .single();
+  const existing = await prisma.supportTicketLink.findUnique({
+    where: { workspaceId_supportcraftTicketId: { workspaceId, supportcraftTicketId: input.ticketId } },
+    select: { id: true },
+  });
 
   if (existing) {
     return { error: `Ticket ${input.ticketNumber} is already linked to a task` };
@@ -171,69 +167,62 @@ export async function createTaskFromTicket(input: {
     low: 'low', normal: 'medium', high: 'high', urgent: 'urgent',
   };
 
-  // Create the task
-  const { data: task, error: taskErr } = await supabase
-    .from('tasks')
-    .insert({
-      workspace_id: workspaceId,
-      project_id:   input.projectId ?? null,
-      title:        `[${input.ticketNumber}] ${input.ticketTitle}`,
-      description:  `Support ticket from ${input.clientName}\n\n${input.ticketUrl}`,
-      status:       TICKET_TO_TASK[input.ticketStatus] ?? 'todo',
-      priority:     priorityMap[input.ticketPriority] ?? 'medium',
-      created_by:   user.id,
-      billable:     false,
-    })
-    .select()
-    .single();
-
-  if (taskErr) return { error: taskErr.message };
-
-  // Create the link
-  const { error: linkErr } = await supabase
-    .from('support_ticket_links')
-    .insert({
-      workspace_id:           workspaceId,
-      task_id:                task.id,
-      supportcraft_ticket_id: input.ticketId,
-      ticket_title:           input.ticketTitle,
-      ticket_url:             input.ticketUrl,
-      ticket_status:          input.ticketStatus,
-      ticket_priority:        input.ticketPriority,
-      client_name:            input.clientName,
-      sync_status:            'linked',
-      created_by:             user.id,
+  try {
+    const task = await prisma.task.create({
+      data: {
+        workspaceId,
+        projectId:   input.projectId ?? null,
+        title:       `[${input.ticketNumber}] ${input.ticketTitle}`,
+        description: `Support ticket from ${input.clientName}\n\n${input.ticketUrl}`,
+        status:      TICKET_TO_TASK[input.ticketStatus] ?? 'todo',
+        priority:    priorityMap[input.ticketPriority] ?? 'medium',
+        createdById: currentUser.profile.id,
+        billable:    false,
+      },
     });
 
-  if (linkErr) {
-    await supabase.from('tasks').delete().eq('id', task.id);
-    return { error: linkErr.message };
+    try {
+      await prisma.supportTicketLink.create({
+        data: {
+          workspaceId,
+          taskId:               task.id,
+          supportcraftTicketId: input.ticketId,
+          ticketTitle:          input.ticketTitle,
+          ticketUrl:            input.ticketUrl,
+          syncStatus:           'linked',
+          createdById:          currentUser.profile.id,
+        },
+      });
+    } catch (linkErr) {
+      await prisma.task.delete({ where: { id: task.id } });
+      return { error: linkErr instanceof Error ? linkErr.message : 'Failed to link ticket' };
+    }
+
+    // Notify the task creator (themselves) about the new linked task
+    notifySupportTicketTaskCreated({
+      workspaceId,
+      userId:      currentUser.profile.id,
+      taskTitle:   task.title,
+      taskId:      task.id,
+      ticketTitle: input.ticketTitle,
+    }).catch(console.error);
+
+    return { data: { task } };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Failed to create task' };
   }
-
-  // Notify the task creator (themselves) about the new linked task
-  notifySupportTicketTaskCreated({
-    workspaceId,
-    userId:      user.id,
-    taskTitle:   task.title,
-    taskId:      task.id,
-    ticketTitle: input.ticketTitle,
-  }).catch(console.error);
-
-  return { data: { task } };
 }
 
 // ── Load recent tickets from SupportCraft ─────────────────────────────────────
 
 export async function loadRecentTickets() {
-  const { supabase, workspaceId } = await getContext();
+  const { workspaceId } = await getContext();
   if (!workspaceId) return { error: 'No workspace found' };
 
-  const { data: settings } = await supabase
-    .from('integration_settings')
-    .select('config, enabled')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'supportcraft')
-    .single();
+  const settings = await prisma.integrationSetting.findUnique({
+    where: { workspaceId_integrationType: { workspaceId, integrationType: 'supportcraft' } },
+    select: { config: true, enabled: true },
+  });
 
   if (!settings?.enabled) return { error: 'SupportCraft not connected' };
 
@@ -245,13 +234,12 @@ export async function loadRecentTickets() {
 
     // Find which tickets are already linked
     const ticketIds = tickets.map((t) => t.id);
-    const { data: linked } = await supabase
-      .from('support_ticket_links')
-      .select('supportcraft_ticket_id, task_id')
-      .eq('workspace_id', workspaceId)
-      .in('supportcraft_ticket_id', ticketIds);
+    const linked = await prisma.supportTicketLink.findMany({
+      where: { workspaceId, supportcraftTicketId: { in: ticketIds } },
+      select: { supportcraftTicketId: true },
+    });
 
-    const linkedSet = new Set((linked ?? []).map((l) => l.supportcraft_ticket_id));
+    const linkedSet = new Set(linked.map((l) => l.supportcraftTicketId));
 
     return { data: { tickets, linkedSet: Array.from(linkedSet) } };
   } catch (err) {

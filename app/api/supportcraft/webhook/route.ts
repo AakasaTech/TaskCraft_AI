@@ -6,8 +6,8 @@
 //   POST /api/supportcraft/webhook?workspace_id={uuid}
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { createAdminClient } from '@/lib/supabase/admin';
-import { SupportCraftService, TICKET_TO_TASK, TASK_TO_TICKET } from '@/lib/supportcraft';
+import { prisma } from '@/lib/prisma';
+import { TICKET_TO_TASK } from '@/lib/supportcraft';
 import { notifySupportTicketTaskCreated } from '@/lib/notifications';
 
 export const runtime = 'nodejs';
@@ -37,13 +37,10 @@ export async function POST(req: Request) {
   const rawBody = await req.text();
 
   // Load integration settings
-  const admin = createAdminClient();
-  const { data: settings } = await admin
-    .from('integration_settings')
-    .select('config, enabled')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'supportcraft')
-    .single();
+  const settings = await prisma.integrationSetting.findUnique({
+    where: { workspaceId_integrationType: { workspaceId, integrationType: 'supportcraft' } },
+    select: { config: true, enabled: true },
+  });
 
   if (!settings?.enabled) {
     return Response.json({ error: 'Integration not enabled' }, { status: 403 });
@@ -94,25 +91,19 @@ async function handleTicketCreated(
   ticket: TicketEvent['ticket'],
   cfg: Record<string, unknown>,
 ) {
-  const admin = createAdminClient();
-
   // Skip if already linked
-  const { data: existing } = await admin
-    .from('support_ticket_links')
-    .select('id')
-    .eq('workspace_id', workspaceId)
-    .eq('supportcraft_ticket_id', ticket.id)
-    .single();
+  const existing = await prisma.supportTicketLink.findUnique({
+    where: { workspaceId_supportcraftTicketId: { workspaceId, supportcraftTicketId: ticket.id } },
+    select: { id: true },
+  });
 
   if (existing) return;
 
   // Get workspace owner to use as task creator
-  const { data: member } = await admin
-    .from('workspace_members')
-    .select('user_id')
-    .eq('workspace_id', workspaceId)
-    .eq('role', 'owner')
-    .single();
+  const member = await prisma.workspaceMember.findFirst({
+    where: { workspaceId, role: 'owner' },
+    select: { userId: true },
+  });
 
   if (!member) return;
 
@@ -121,82 +112,68 @@ async function handleTicketCreated(
   };
   const taskStatus = TICKET_TO_TASK[ticket.status as keyof typeof TICKET_TO_TASK] ?? 'todo';
 
-  const { data: task } = await admin
-    .from('tasks')
-    .insert({
-      workspace_id: workspaceId,
-      project_id:   (cfg.default_project_id as string | null) ?? null,
-      title:        `[${ticket.number}] ${ticket.title}`,
-      description:  `Support ticket from ${ticket.client_name}\n\n${ticket.url}`,
-      status:       taskStatus,
-      priority:     priorityMap[ticket.priority] ?? 'medium',
-      created_by:   member.user_id,
-      billable:     false,
-    })
-    .select()
-    .single();
+  const task = await prisma.task.create({
+    data: {
+      workspaceId,
+      projectId:   (cfg.default_project_id as string | null) ?? null,
+      title:       `[${ticket.number}] ${ticket.title}`,
+      description: `Support ticket from ${ticket.client_name}\n\n${ticket.url}`,
+      status:      taskStatus,
+      priority:    priorityMap[ticket.priority] ?? 'medium',
+      createdById: member.userId,
+      billable:    false,
+    },
+  });
 
-  if (!task) return;
-
-  await admin.from('support_ticket_links').insert({
-    workspace_id:           workspaceId,
-    task_id:                task.id,
-    supportcraft_ticket_id: ticket.id,
-    ticket_title:           ticket.title,
-    ticket_url:             ticket.url,
-    ticket_status:          ticket.status,
-    ticket_priority:        ticket.priority,
-    client_name:            ticket.client_name,
-    sync_status:            'synced',
-    created_by:             member.user_id,
-    last_synced_at:         new Date().toISOString(),
+  await prisma.supportTicketLink.create({
+    data: {
+      workspaceId,
+      taskId:               task.id,
+      supportcraftTicketId: ticket.id,
+      ticketTitle:          ticket.title,
+      ticketUrl:            ticket.url,
+      syncStatus:           'synced',
+      createdById:          member.userId,
+    },
   });
 
   notifySupportTicketTaskCreated({
     workspaceId,
-    userId:    member.user_id,
-    taskTitle: task.title,
-    taskId:    task.id,
+    userId:      member.userId,
+    taskTitle:   task.title,
+    taskId:      task.id,
     ticketTitle: ticket.title,
   }).catch(console.error);
 }
 
 async function handleTicketUpdated(workspaceId: string, ticket: TicketEvent['ticket']) {
-  const admin = createAdminClient();
-
   // Find linked task
-  const { data: link } = await admin
-    .from('support_ticket_links')
-    .select('id, task_id')
-    .eq('workspace_id', workspaceId)
-    .eq('supportcraft_ticket_id', ticket.id)
-    .single();
+  const link = await prisma.supportTicketLink.findUnique({
+    where: { workspaceId_supportcraftTicketId: { workspaceId, supportcraftTicketId: ticket.id } },
+    select: { id: true, taskId: true },
+  });
 
   if (!link) return;
 
   // Update the link's cached ticket info
-  await admin
-    .from('support_ticket_links')
-    .update({
-      ticket_title:   ticket.title,
-      ticket_url:     ticket.url,
-      ticket_status:  ticket.status,
-      ticket_priority:ticket.priority,
-      client_name:    ticket.client_name,
-      sync_status:    'synced',
-      last_synced_at: new Date().toISOString(),
-    })
-    .eq('id', link.id);
+  await prisma.supportTicketLink.update({
+    where: { id: link.id },
+    data: {
+      ticketTitle: ticket.title,
+      ticketUrl:   ticket.url,
+      syncStatus:  'synced',
+    },
+  });
 
   // Map ticket status → task status and update task
   const newTaskStatus = TICKET_TO_TASK[ticket.status as keyof typeof TICKET_TO_TASK];
   if (newTaskStatus) {
-    await admin
-      .from('tasks')
-      .update({
+    await prisma.task.update({
+      where: { id: link.taskId },
+      data: {
         status: newTaskStatus,
-        ...(newTaskStatus === 'done' ? { completed_at: new Date().toISOString() } : {}),
-      })
-      .eq('id', link.task_id);
+        ...(newTaskStatus === 'done' ? { completedAt: new Date() } : {}),
+      },
+    });
   }
 }

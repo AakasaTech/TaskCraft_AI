@@ -7,7 +7,7 @@
 //                  PAYMENT.SALE.COMPLETED
 
 import https from 'node:https';
-import { createAdminClient } from '@/lib/supabase/admin';
+import { prisma } from '@/lib/prisma';
 
 export const runtime = 'nodejs';
 
@@ -117,39 +117,37 @@ export async function POST(req: Request) {
 
   console.log('[paypal/webhook]', eventType, subId);
 
-  const admin = createAdminClient();
-
   switch (eventType) {
     case 'BILLING.SUBSCRIPTION.ACTIVATED':
     case 'PAYMENT.SALE.COMPLETED': {
       const planId = (resource.plan_id as string) ?? '';
       const plan   = planFromPayPalPlanId(planId);
 
-      await admin
-        .from('subscriptions')
-        .update({
-          status:               'active',
-          ...(plan ? { plan_id: plan } : {}),
-          current_period_start: new Date().toISOString(),
-        })
-        .eq('paypal_subscription_id', subId);
+      await prisma.subscription.updateMany({
+        where: { paypalSubscriptionId: subId },
+        data: {
+          status:             'active',
+          ...(plan ? { planId: plan } : {}),
+          currentPeriodStart: new Date(),
+        },
+      });
       break;
     }
 
     case 'BILLING.SUBSCRIPTION.CANCELLED':
     case 'BILLING.SUBSCRIPTION.EXPIRED': {
-      await admin
-        .from('subscriptions')
-        .update({ status: eventType.includes('CANCELLED') ? 'cancelled' : 'expired', cancelled_at: new Date().toISOString() })
-        .eq('paypal_subscription_id', subId);
+      await prisma.subscription.updateMany({
+        where: { paypalSubscriptionId: subId },
+        data:  { status: eventType.includes('CANCELLED') ? 'cancelled' : 'expired', cancelledAt: new Date() },
+      });
       break;
     }
 
     case 'BILLING.SUBSCRIPTION.SUSPENDED': {
-      await admin
-        .from('subscriptions')
-        .update({ status: 'past_due' })
-        .eq('paypal_subscription_id', subId);
+      await prisma.subscription.updateMany({
+        where: { paypalSubscriptionId: subId },
+        data:  { status: 'past_due' },
+      });
       break;
     }
 

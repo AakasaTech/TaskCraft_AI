@@ -1,21 +1,31 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getAuthUser } from '@/lib/auth/helpers';
 
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { data, error } = await supabase
-    .from('task_comments')
-    .select('*, profiles(full_name, avatar_url)')
-    .eq('task_id', id)
-    .order('created_at', { ascending: true });
+  const comments = await prisma.taskComment.findMany({
+    where: { taskId: id },
+    orderBy: { createdAt: 'asc' },
+    include: { user: { select: { fullName: true, avatarUrl: true } } },
+  });
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ data });
+  return NextResponse.json({
+    data: comments.map((c) => ({
+      id:         c.id,
+      task_id:    c.taskId,
+      user_id:    c.userId,
+      content:    c.content,
+      is_edited:  c.isEdited,
+      created_at: c.createdAt.toISOString(),
+      updated_at: c.updatedAt.toISOString(),
+      profiles:   { full_name: c.user.fullName, avatar_url: c.user.avatarUrl },
+    })),
+  });
 }

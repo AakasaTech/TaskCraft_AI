@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
 import { NotificationsClient } from './_components/NotificationsClient';
 import type { NotificationPrefs } from '../actions';
 
@@ -15,40 +15,23 @@ const DEFAULT_PREFS: NotificationPrefs = {
 };
 
 export default async function NotificationsPage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  const { data: member } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', user.id)
-    .maybeSingle();
+  const settings  = (currentUser.workspace.settings ?? {}) as Record<string, unknown>;
+  const userPrefs = (settings.user_prefs ?? {}) as Record<string, unknown>;
+  const userEntry = (userPrefs[currentUser.profile.id] ?? {}) as Record<string, unknown>;
+  const saved     = userEntry.notifications as Partial<NotificationPrefs> | undefined;
 
-  let prefs = { ...DEFAULT_PREFS };
-
-  if (member?.workspace_id) {
-    const { data: workspace } = await supabase
-      .from('workspaces')
-      .select('settings')
-      .eq('id', member.workspace_id)
-      .single();
-
-    const settings    = (workspace?.settings ?? {}) as Record<string, unknown>;
-    const userPrefs   = (settings.user_prefs  ?? {}) as Record<string, unknown>;
-    const userEntry   = (userPrefs[user.id]   ?? {}) as Record<string, unknown>;
-    const saved       = userEntry.notifications as Partial<NotificationPrefs> | undefined;
-
-    if (saved) {
-      prefs = {
+  const prefs: NotificationPrefs = saved
+    ? {
         task_assigned:   saved.task_assigned   ?? DEFAULT_PREFS.task_assigned,
         task_due:        saved.task_due        ?? DEFAULT_PREFS.task_due,
         project_updates: saved.project_updates ?? DEFAULT_PREFS.project_updates,
         billing:         saved.billing         ?? DEFAULT_PREFS.billing,
         weekly_summary:  saved.weekly_summary  ?? DEFAULT_PREFS.weekly_summary,
-      };
-    }
-  }
+      }
+    : { ...DEFAULT_PREFS };
 
   return <NotificationsClient initialPrefs={prefs} />;
 }

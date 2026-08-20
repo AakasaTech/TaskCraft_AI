@@ -6,7 +6,6 @@ import { Loader2, Upload, Building2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { SettingsSection, SettingsRow } from '@/components/shared/SettingsSection';
-import { createClient } from '@/lib/supabase/client';
 import { updateWorkspace, type WorkspaceSettings } from '../../actions';
 
 const CURRENCIES = [
@@ -94,19 +93,22 @@ export function WorkspaceSettingsClient({
 
     setUploading(true);
     try {
-      const supabase  = createClient();
-      const path      = `${workspaceId}/logo.${ext}`;
-      const { error } = await supabase.storage
-        .from('workspace-logos')
-        .upload(path, file, { upsert: true, contentType: file.type });
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('folder', 'workspace-logos');
 
-      if (error) throw error;
+      const resUpload = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
 
-      const { data: urlData } = supabase.storage
-        .from('workspace-logos')
-        .getPublicUrl(path);
+      if (!resUpload.ok) {
+        const errJson = await resUpload.json();
+        throw new Error(errJson.error || 'Upload failed');
+      }
 
-      const newUrl = `${urlData.publicUrl}?t=${Date.now()}`;
+      const { url: newUrl } = await resUpload.json();
+
       const res = await updateWorkspace({ avatar_url: newUrl });
       if (res.error) throw new Error(res.error);
 

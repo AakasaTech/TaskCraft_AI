@@ -2,7 +2,8 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { ChevronLeft } from 'lucide-react';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
+import { prisma } from '@/lib/prisma';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
 import { InvoiceWizard } from './_components/InvoiceWizard';
@@ -12,17 +13,13 @@ import type { Plan } from '@/lib/types';
 export const metadata: Metadata = { title: 'New Invoice' };
 
 export default async function NewInvoicePage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('plan, plan_expires_at')
-    .eq('id', user.id)
-    .single();
-
-  const userPlan = getEffectivePlan((profile?.plan ?? 'free') as Plan, profile?.plan_expires_at ?? null);
+  const userPlan = getEffectivePlan(
+    currentUser.profile.plan as Plan,
+    currentUser.profile.planExpiresAt?.toISOString() ?? null
+  );
 
   if (userPlan === 'free') {
     return (
@@ -33,24 +30,17 @@ export default async function NewInvoicePage() {
     );
   }
 
-  const { data: member } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', user.id)
-    .limit(1)
-    .single();
-
-  const workspaceId = member?.workspace_id;
+  const workspaceId = currentUser.workspace.id;
 
   // Check BillCraft is connected
-  const { data: bcSettings } = workspaceId
-    ? await supabase
-        .from('integration_settings')
-        .select('enabled')
-        .eq('workspace_id', workspaceId)
-        .eq('integration_type', 'billcraft')
-        .single()
-    : { data: null };
+  const bcSettings = await prisma.integrationSetting.findUnique({
+    where: {
+      workspaceId_integrationType: {
+        workspaceId,
+        integrationType: 'billcraft',
+      },
+    },
+  });
 
   if (!bcSettings?.enabled) {
     return (
@@ -70,28 +60,55 @@ export default async function NewInvoicePage() {
     );
   }
 
-  // Pre-fetch workspace projects for the scope selector
-  const { data: projects } = workspaceId
-    ? await supabase
-        .from('projects')
-        .select('id, name, color, status')
-        .eq('workspace_id', workspaceId)
-        .in('status', ['active', 'not_started'])
-        .order('name')
-    : { data: [] };
+  // Pre-fetch workspace projects
+  const projects = await prisma.project.findMany({
+    where: {
+      workspaceId,
+      status: { in: ['active', 'not_started'] },
+    },
+    select: {
+      id: true,
+      name: true,
+      color: true,
+      status: true,
+      workspaceId: true,
+      description: true,
+      clientId: true,
+      startDate: true,
+      dueDate: true,
+      budget: true,
+      hourlyRate: true,
+      billable: true,
+      position: true,
+      createdById: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+    orderBy: { name: 'asc' },
+  });
 
-  // Workspace currency + hourly rate defaults
-  const { data: workspace } = workspaceId
-    ? await supabase
-        .from('workspaces')
-        .select('settings')
-        .eq('id', workspaceId)
-        .single()
-    : { data: null };
-
-  const wsSettings = (workspace?.settings ?? {}) as Record<string, unknown>;
+  const wsSettings = (currentUser.workspace.settings ?? {}) as Record<string, unknown>;
   const currency   = (wsSettings.currency as string | undefined) ?? 'USD';
   const hourlyRate = (wsSettings.hourly_rate as number | undefined) ?? 0;
+
+  const shapedProjects = projects.map((p) => ({
+    id:          p.id,
+    workspace_id: p.workspaceId,
+    client_id:   p.clientId,
+    name:        p.name,
+    description: p.description,
+    color:       p.color,
+    status:      p.status as any,
+    start_date:  p.startDate?.toISOString().split('T')[0] ?? null,
+    due_date:    p.dueDate?.toISOString().split('T')[0] ?? null,
+    budget:      p.budget ? Number(p.budget) : null,
+    hourly_rate: p.hourlyRate ? Number(p.hourlyRate) : null,
+    billable:    p.billable,
+    position:    p.position,
+    created_by:  p.createdById,
+    created_at:  p.createdAt.toISOString(),
+    updated_at:  p.updatedAt.toISOString(),
+  }));
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 animate-fade-in">
@@ -106,7 +123,7 @@ export default async function NewInvoicePage() {
 
       <div className="tc-card p-6">
         <InvoiceWizard
-          projects={(projects ?? []) as import('@/lib/types').Project[]}
+          projects={shapedProjects as any}
           currency={currency}
           hourlyRate={hourlyRate}
         />

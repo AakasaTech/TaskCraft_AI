@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getCurrentUser } from '@/lib/auth/helpers';
 import { callOpenAI } from '@/lib/ai';
 import { getEffectivePlan } from '@/lib/plan-gates';
 
@@ -24,12 +25,15 @@ const TOOL_PLANS: Record<string, Array<'free' | 'solo' | 'team'>> = {
 
 const JSON_SYSTEM = 'Always respond with valid JSON only. No markdown, no code blocks, just the raw JSON object.';
 
+function dateOnly(d: Date | null): string | null {
+  return d ? d.toISOString().slice(0, 10) : null;
+}
+
 // ── Tool prompt builders ────────────────────────────────────────────────────
 
 async function buildPrompt(
   tool: string,
   input: Record<string, string>,
-  supabase: Awaited<ReturnType<typeof createClient>>,
   uid: string,
   wid: string,
 ) {
@@ -38,22 +42,19 @@ async function buildPrompt(
     case 'task-generator': {
       let projContext = '';
       if (input.project_id) {
-        const { data: p } = await supabase
-          .from('projects')
-          .select('name, description, clients(name)')
-          .eq('id', input.project_id)
-          .single();
+        const p = await prisma.project.findUnique({
+          where: { id: input.project_id },
+          select: { name: true, description: true, client: { select: { name: true } } },
+        });
         if (p) {
-          const client = Array.isArray((p as any).clients) ? (p as any).clients[0] : (p as any).clients;
-          projContext = `Project: ${p.name}\nDescription: ${p.description ?? '(none)'}\nClient: ${client?.name ?? '(none)'}`;
+          projContext = `Project: ${p.name}\nDescription: ${p.description ?? '(none)'}\nClient: ${p.client?.name ?? '(none)'}`;
         }
-        const { data: existingTasks } = await supabase
-          .from('tasks')
-          .select('title')
-          .eq('project_id', input.project_id)
-          .neq('status', 'done')
-          .limit(20);
-        if (existingTasks?.length) {
+        const existingTasks = await prisma.task.findMany({
+          where: { projectId: input.project_id, status: { not: 'done' } },
+          select: { title: true },
+          take: 20,
+        });
+        if (existingTasks.length) {
           projContext += `\nExisting open tasks (do not duplicate): ${existingTasks.map((t) => t.title).join(', ')}`;
         }
       }
@@ -66,14 +67,12 @@ async function buildPrompt(
     case 'subtask-generator': {
       let ctx = '';
       if (input.task_id) {
-        const { data: t } = await supabase
-          .from('tasks')
-          .select('title, description, projects(name)')
-          .eq('id', input.task_id)
-          .single();
+        const t = await prisma.task.findUnique({
+          where: { id: input.task_id },
+          select: { title: true, description: true, project: { select: { name: true } } },
+        });
         if (t) {
-          const proj = Array.isArray((t as any).projects) ? (t as any).projects[0] : (t as any).projects;
-          ctx = `Task: ${t.title}\nDescription: ${t.description ?? '(none)'}\nProject: ${proj?.name ?? '(none)'}`;
+          ctx = `Task: ${t.title}\nDescription: ${t.description ?? '(none)'}\nProject: ${t.project?.name ?? '(none)'}`;
         }
       }
       return {
@@ -90,42 +89,47 @@ async function buildPrompt(
     }
 
     case 'daily-plan': {
-      const today = new Date().toISOString().slice(0, 10);
-      const { data: tasks } = await supabase
-        .from('tasks')
-        .select('id, title, priority, due_date, status, projects(name)')
-        .eq('workspace_id', wid)
-        .eq('assignee_id', uid)
-        .in('status', ['todo', 'in_progress', 'in_review'])
-        .order('due_date', { ascending: true, nullsFirst: false })
-        .limit(30);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
 
-      const overdue = (tasks ?? []).filter((t) => t.due_date && t.due_date < today);
-      const upcoming = (tasks ?? []).filter((t) => !t.due_date || t.due_date >= today);
+      const tasks = await prisma.task.findMany({
+        where: {
+          workspaceId: wid,
+          assigneeId:  uid,
+          status:      { in: ['todo', 'in_progress', 'in_review'] },
+        },
+        select: { id: true, title: true, priority: true, dueDate: true, status: true, project: { select: { name: true } } },
+        orderBy: { dueDate: { sort: 'asc', nulls: 'last' } },
+        take: 30,
+      });
 
-      const fmt = (arr: typeof tasks) => (arr ?? []).map((t) => {
-        const p = Array.isArray((t as any).projects) ? (t as any).projects[0] : (t as any).projects;
-        return `[${t.id}] ${t.title} (${t.priority}, ${p?.name ?? 'no project'}, due: ${t.due_date ?? 'none'})`;
-      }).join('\n');
+      const overdue  = tasks.filter((t) => t.dueDate && t.dueDate.getTime() < today.getTime());
+      const upcoming = tasks.filter((t) => !t.dueDate || t.dueDate.getTime() >= today.getTime());
+
+      const fmt = (arr: typeof tasks) => arr.map((t) =>
+        `[${t.id}] ${t.title} (${t.priority}, ${t.project?.name ?? 'no project'}, due: ${dateOnly(t.dueDate) ?? 'none'})`
+      ).join('\n');
 
       return {
         system: `${JSON_SYSTEM}\nCreate a prioritized daily work plan. Schema:\n{"plan":[{"task_id":"string","title":"string","reason":"string","suggested_minutes":number}],"summary":"string"}`,
-        user:   `Today: ${today}\n\nOverdue tasks:\n${fmt(overdue) || '(none)'}\n\nUpcoming tasks:\n${fmt(upcoming) || '(none)'}`,
+        user:   `Today: ${dateOnly(today)}\n\nOverdue tasks:\n${fmt(overdue) || '(none)'}\n\nUpcoming tasks:\n${fmt(upcoming) || '(none)'}`,
       };
     }
 
     case 'priority-suggestions': {
-      const { data: tasks } = await supabase
-        .from('tasks')
-        .select('id, title, priority, due_date, status, description')
-        .eq('workspace_id', wid)
-        .eq('assignee_id', uid)
-        .not('status', 'in', '("done","backlog")')
-        .order('created_at', { ascending: false })
-        .limit(25);
+      const tasks = await prisma.task.findMany({
+        where: {
+          workspaceId: wid,
+          assigneeId:  uid,
+          status:      { notIn: ['done', 'backlog'] },
+        },
+        select: { id: true, title: true, priority: true, dueDate: true, status: true, description: true },
+        orderBy: { createdAt: 'desc' },
+        take: 25,
+      });
 
-      const list = (tasks ?? []).map((t) =>
-        `[${t.id}] "${t.title}" current:${t.priority} due:${t.due_date ?? 'none'} status:${t.status}`
+      const list = tasks.map((t) =>
+        `[${t.id}] "${t.title}" current:${t.priority} due:${dateOnly(t.dueDate) ?? 'none'} status:${t.status}`
       ).join('\n');
 
       return {
@@ -137,19 +141,21 @@ async function buildPrompt(
     case 'progress-summary': {
       let ctx = 'No project selected.';
       if (input.project_id) {
-        const [projRes, tasksRes, timeRes] = await Promise.all([
-          supabase.from('projects').select('name, description, status, budget, hourly_rate, clients(name)').eq('id', input.project_id).single(),
-          supabase.from('tasks').select('status, priority').eq('project_id', input.project_id),
-          supabase.from('time_entries').select('duration_minutes, billable').eq('project_id', input.project_id).not('duration_minutes', 'is', null),
+        const [proj, tasks, time] = await Promise.all([
+          prisma.project.findUnique({
+            where: { id: input.project_id },
+            select: { name: true, description: true, status: true, budget: true, hourlyRate: true, client: { select: { name: true } } },
+          }),
+          prisma.task.findMany({ where: { projectId: input.project_id }, select: { status: true, priority: true } }),
+          prisma.timeEntry.findMany({
+            where: { projectId: input.project_id, durationMinutes: { not: null } },
+            select: { durationMinutes: true, billable: true },
+          }),
         ]);
-        const proj = projRes.data;
-        const tasks = tasksRes.data ?? [];
-        const time  = timeRes.data ?? [];
         if (proj) {
-          const client = Array.isArray((proj as any).clients) ? (proj as any).clients[0] : (proj as any).clients;
-          const totalMins = time.reduce((s, e) => s + (e.duration_minutes ?? 0), 0);
-          const billMins  = time.filter((e) => e.billable).reduce((s, e) => s + (e.duration_minutes ?? 0), 0);
-          ctx = `Project: ${proj.name}\nClient: ${client?.name ?? 'none'}\nStatus: ${proj.status}\nTasks total: ${tasks.length} | Done: ${tasks.filter(t => t.status === 'done').length} | In progress: ${tasks.filter(t => t.status === 'in_progress').length} | Overdue: ${tasks.filter(t => t.status !== 'done').length}\nHours logged: ${(totalMins / 60).toFixed(1)}h | Billable: ${(billMins / 60).toFixed(1)}h`;
+          const totalMins = time.reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
+          const billMins  = time.filter((e) => e.billable).reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
+          ctx = `Project: ${proj.name}\nClient: ${proj.client?.name ?? 'none'}\nStatus: ${proj.status}\nTasks total: ${tasks.length} | Done: ${tasks.filter(t => t.status === 'done').length} | In progress: ${tasks.filter(t => t.status === 'in_progress').length} | Overdue: ${tasks.filter(t => t.status !== 'done').length}\nHours logged: ${(totalMins / 60).toFixed(1)}h | Billable: ${(billMins / 60).toFixed(1)}h`;
         }
       }
       return {
@@ -168,21 +174,18 @@ async function buildPrompt(
     case 'productivity-insights': {
       const since = new Date();
       since.setDate(since.getDate() - 30);
-      const { data: entries } = await supabase
-        .from('time_entries')
-        .select('duration_minutes, billable, start_time, project_id, projects(name)')
-        .eq('user_id', uid)
-        .not('duration_minutes', 'is', null)
-        .gte('start_time', since.toISOString());
+      const entries = await prisma.timeEntry.findMany({
+        where: { userId: uid, durationMinutes: { not: null }, startTime: { gte: since } },
+        select: { durationMinutes: true, billable: true, startTime: true, projectId: true, project: { select: { name: true } } },
+      });
 
-      const totalMins = (entries ?? []).reduce((s, e) => s + (e.duration_minutes ?? 0), 0);
-      const billMins  = (entries ?? []).filter((e) => e.billable).reduce((s, e) => s + (e.duration_minutes ?? 0), 0);
+      const totalMins = entries.reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
+      const billMins  = entries.filter((e) => e.billable).reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
 
       const byProject: Record<string, number> = {};
-      for (const e of entries ?? []) {
-        const p = Array.isArray((e as any).projects) ? (e as any).projects[0] : (e as any).projects;
-        const name = p?.name ?? 'No project';
-        byProject[name] = (byProject[name] ?? 0) + (e.duration_minutes ?? 0);
+      for (const e of entries) {
+        const name = e.project?.name ?? 'No project';
+        byProject[name] = (byProject[name] ?? 0) + (e.durationMinutes ?? 0);
       }
       const byProj = Object.entries(byProject)
         .sort(([, a], [, b]) => b - a)
@@ -197,21 +200,24 @@ async function buildPrompt(
     }
 
     case 'overdue-suggestions': {
-      const today = new Date().toISOString().slice(0, 10);
-      const { data: tasks } = await supabase
-        .from('tasks')
-        .select('id, title, priority, due_date, description, projects(name)')
-        .eq('workspace_id', wid)
-        .eq('assignee_id', uid)
-        .lt('due_date', today)
-        .not('status', 'eq', 'done')
-        .order('due_date', { ascending: true })
-        .limit(20);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
 
-      const list = (tasks ?? []).map((t) => {
-        const p = Array.isArray((t as any).projects) ? (t as any).projects[0] : (t as any).projects;
-        const daysOver = Math.floor((Date.now() - new Date(t.due_date!).getTime()) / 86400000);
-        return `[${t.id}] "${t.title}" | project: ${p?.name ?? 'none'} | overdue by ${daysOver}d | priority: ${t.priority}`;
+      const tasks = await prisma.task.findMany({
+        where: {
+          workspaceId: wid,
+          assigneeId:  uid,
+          status:      { not: 'done' },
+          dueDate:     { lt: today },
+        },
+        select: { id: true, title: true, priority: true, dueDate: true, description: true, project: { select: { name: true } } },
+        orderBy: { dueDate: 'asc' },
+        take: 20,
+      });
+
+      const list = tasks.map((t) => {
+        const daysOver = Math.floor((Date.now() - t.dueDate!.getTime()) / 86400000);
+        return `[${t.id}] "${t.title}" | project: ${t.project?.name ?? 'none'} | overdue by ${daysOver}d | priority: ${t.priority}`;
       }).join('\n');
 
       return {
@@ -221,25 +227,22 @@ async function buildPrompt(
     }
 
     case 'workload-balancing': {
-      const { data: members } = await supabase
-        .from('workspace_members')
-        .select('user_id, profiles(full_name, email)')
-        .eq('workspace_id', wid);
+      const members = await prisma.workspaceMember.findMany({
+        where: { workspaceId: wid },
+        select: { userId: true, user: { select: { fullName: true, email: true } } },
+      });
 
-      const memberList = await Promise.all((members ?? []).map(async (m) => {
-        const { data: tasks } = await supabase
-          .from('tasks')
-          .select('id, title, priority, due_date, estimated_hours')
-          .eq('workspace_id', wid)
-          .eq('assignee_id', m.user_id)
-          .not('status', 'in', '("done","backlog")')
-          .limit(20);
-        const prof = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles as any;
-        const name = prof?.full_name ?? prof?.email ?? m.user_id;
-        const taskSummary = (tasks ?? []).map((t) =>
-          `"${t.title}" (${t.priority}, ${t.estimated_hours ?? '?'}h, due: ${t.due_date ?? 'none'})`
+      const memberList = await Promise.all(members.map(async (m) => {
+        const tasks = await prisma.task.findMany({
+          where: { workspaceId: wid, assigneeId: m.userId, status: { notIn: ['done', 'backlog'] } },
+          select: { id: true, title: true, priority: true, dueDate: true, estimatedHours: true },
+          take: 20,
+        });
+        const name = m.user.fullName ?? m.user.email ?? m.userId;
+        const taskSummary = tasks.map((t) =>
+          `"${t.title}" (${t.priority}, ${t.estimatedHours ?? '?'}h, due: ${dateOnly(t.dueDate) ?? 'none'})`
         ).join('; ');
-        return `${name}: ${tasks?.length ?? 0} tasks — ${taskSummary || '(no tasks)'}`;
+        return `${name}: ${tasks.length} tasks — ${taskSummary || '(no tasks)'}`;
       }));
 
       return {
@@ -249,27 +252,25 @@ async function buildPrompt(
     }
 
     case 'capacity-planning': {
-      const { data: members } = await supabase
-        .from('workspace_members')
-        .select('user_id, profiles(full_name, email)')
-        .eq('workspace_id', wid);
+      const members = await prisma.workspaceMember.findMany({
+        where: { workspaceId: wid },
+        select: { userId: true, user: { select: { fullName: true, email: true } } },
+      });
 
-      const { data: upcoming } = await supabase
-        .from('tasks')
-        .select('id, title, priority, estimated_hours, assignee_id, due_date')
-        .eq('workspace_id', wid)
-        .not('status', 'in', '("done","backlog")')
-        .order('due_date', { ascending: true })
-        .limit(30);
+      const upcoming = await prisma.task.findMany({
+        where: { workspaceId: wid, status: { notIn: ['done', 'backlog'] } },
+        select: { id: true, title: true, priority: true, estimatedHours: true, assigneeId: true, dueDate: true },
+        orderBy: { dueDate: 'asc' },
+        take: 30,
+      });
 
       const memberNames: Record<string, string> = {};
-      for (const m of members ?? []) {
-        const prof = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles as any;
-        memberNames[m.user_id] = prof?.full_name ?? prof?.email ?? m.user_id;
+      for (const m of members) {
+        memberNames[m.userId] = m.user.fullName ?? m.user.email ?? m.userId;
       }
 
-      const taskList = (upcoming ?? []).map((t) =>
-        `"${t.title}" | est: ${t.estimated_hours ?? '?'}h | priority: ${t.priority} | assignee: ${memberNames[t.assignee_id ?? ''] ?? 'unassigned'} | due: ${t.due_date ?? 'none'}`
+      const taskList = upcoming.map((t) =>
+        `"${t.title}" | est: ${t.estimatedHours ?? '?'}h | priority: ${t.priority} | assignee: ${memberNames[t.assigneeId ?? ''] ?? 'unassigned'} | due: ${dateOnly(t.dueDate) ?? 'none'}`
       ).join('\n');
 
       return {
@@ -281,20 +282,18 @@ async function buildPrompt(
     case 'project-health': {
       let ctx = 'No project selected.';
       if (input.project_id) {
-        const today = new Date().toISOString().slice(0, 10);
-        const [projRes, tasksRes, timeRes] = await Promise.all([
-          supabase.from('projects').select('name, status, budget, hourly_rate, deadline').eq('id', input.project_id).single(),
-          supabase.from('tasks').select('status, priority, due_date').eq('project_id', input.project_id),
-          supabase.from('time_entries').select('duration_minutes, billable, hourly_rate').eq('project_id', input.project_id).not('duration_minutes', 'is', null),
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const [proj, tasks, time] = await Promise.all([
+          prisma.project.findUnique({ where: { id: input.project_id }, select: { name: true, status: true, budget: true, hourlyRate: true, dueDate: true } }),
+          prisma.task.findMany({ where: { projectId: input.project_id }, select: { status: true, priority: true, dueDate: true } }),
+          prisma.timeEntry.findMany({ where: { projectId: input.project_id, durationMinutes: { not: null } }, select: { durationMinutes: true, billable: true, hourlyRate: true } }),
         ]);
-        const proj = projRes.data as any;
-        const tasks = tasksRes.data ?? [];
-        const time  = timeRes.data ?? [];
         if (proj) {
-          const totalMins = time.reduce((s, e) => s + (e.duration_minutes ?? 0), 0);
-          const billVal   = time.reduce((s, e) => s + (e.billable ? (e.duration_minutes ?? 0) / 60 * (e.hourly_rate ?? 0) : 0), 0);
-          const overdue   = tasks.filter((t) => t.status !== 'done' && t.due_date && t.due_date < today).length;
-          ctx = `Project: ${proj.name}\nStatus: ${proj.status}\nTotal tasks: ${tasks.length} | Done: ${tasks.filter(t => t.status === 'done').length} | Overdue: ${overdue}\nHours logged: ${(totalMins / 60).toFixed(1)}h | Billable value: $${billVal.toFixed(2)}\nBudget: ${proj.budget ?? 'N/A'} | Deadline: ${proj.deadline ?? 'N/A'}`;
+          const totalMins = time.reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
+          const billVal   = time.reduce((s, e) => s + (e.billable ? (e.durationMinutes ?? 0) / 60 * Number(e.hourlyRate ?? 0) : 0), 0);
+          const overdue   = tasks.filter((t) => t.status !== 'done' && t.dueDate && t.dueDate.getTime() < today.getTime()).length;
+          ctx = `Project: ${proj.name}\nStatus: ${proj.status}\nTotal tasks: ${tasks.length} | Done: ${tasks.filter(t => t.status === 'done').length} | Overdue: ${overdue}\nHours logged: ${(totalMins / 60).toFixed(1)}h | Billable value: $${billVal.toFixed(2)}\nBudget: ${proj.budget ?? 'N/A'} | Deadline: ${dateOnly(proj.dueDate) ?? 'N/A'}`;
         }
       }
       return {
@@ -306,17 +305,16 @@ async function buildPrompt(
     case 'risk-detection': {
       let ctx = 'No project selected.';
       if (input.project_id) {
-        const today = new Date().toISOString().slice(0, 10);
-        const [projRes, tasksRes] = await Promise.all([
-          supabase.from('projects').select('name, status, budget, deadline').eq('id', input.project_id).single(),
-          supabase.from('tasks').select('status, priority, due_date, title').eq('project_id', input.project_id),
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const [proj, tasks] = await Promise.all([
+          prisma.project.findUnique({ where: { id: input.project_id }, select: { name: true, status: true, budget: true, dueDate: true } }),
+          prisma.task.findMany({ where: { projectId: input.project_id }, select: { status: true, priority: true, dueDate: true, title: true } }),
         ]);
-        const proj = projRes.data as any;
-        const tasks = tasksRes.data ?? [];
         if (proj) {
-          const overdue = tasks.filter((t) => t.status !== 'done' && t.due_date && t.due_date < today);
+          const overdue = tasks.filter((t) => t.status !== 'done' && t.dueDate && t.dueDate.getTime() < today.getTime());
           const urgent  = tasks.filter((t) => t.priority === 'urgent' && t.status !== 'done');
-          ctx = `Project: ${proj.name}\nStatus: ${proj.status}\nDeadline: ${proj.deadline ?? 'N/A'}\nBudget: ${proj.budget ?? 'N/A'}\nOverdue tasks (${overdue.length}): ${overdue.map(t => t.title).slice(0, 5).join(', ')}\nUrgent open tasks (${urgent.length}): ${urgent.map(t => t.title).slice(0, 5).join(', ')}\nTotal tasks: ${tasks.length} | Done: ${tasks.filter(t => t.status === 'done').length}`;
+          ctx = `Project: ${proj.name}\nStatus: ${proj.status}\nDeadline: ${dateOnly(proj.dueDate) ?? 'N/A'}\nBudget: ${proj.budget ?? 'N/A'}\nOverdue tasks (${overdue.length}): ${overdue.map(t => t.title).slice(0, 5).join(', ')}\nUrgent open tasks (${urgent.length}): ${urgent.map(t => t.title).slice(0, 5).join(', ')}\nTotal tasks: ${tasks.length} | Done: ${tasks.filter(t => t.status === 'done').length}`;
         }
       }
       return {
@@ -333,9 +331,8 @@ async function buildPrompt(
 // ── Route handler ──────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const currentUser = await getCurrentUser();
+    if (!currentUser) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const body = await req.json() as Record<string, string>;
     const tool = body.tool;
@@ -344,15 +341,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unknown AI tool.' }, { status: 400 });
     }
 
-    // Get user plan + workspace
-    const [profileRes, memberRes] = await Promise.all([
-      supabase.from('profiles').select('plan, plan_expires_at').eq('id', user.id).single(),
-      supabase.from('workspace_members').select('workspace_id').eq('user_id', user.id).single(),
-    ]);
-
-    const plan = getEffectivePlan((profileRes.data?.plan ?? 'free') as 'free' | 'solo' | 'team', profileRes.data?.plan_expires_at ?? null);
-    const wid  = memberRes.data?.workspace_id;
-    if (!wid) return NextResponse.json({ error: 'No workspace found.' }, { status: 400 });
+    const plan = getEffectivePlan(currentUser.profile.plan as 'free' | 'solo' | 'team', currentUser.profile.planExpiresAt?.toISOString() ?? null);
+    const wid  = currentUser.workspace.id;
+    const uid  = currentUser.profile.id;
 
     // Plan access check
     if (!TOOL_PLANS[tool].includes(plan)) {
@@ -369,13 +360,11 @@ export async function POST(req: NextRequest) {
       const since = new Date();
       since.setDate(1); // first of month
       since.setHours(0, 0, 0, 0);
-      const { count } = await supabase
-        .from('ai_usage')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', user.id)
-        .gte('used_at', since.toISOString());
+      const count = await prisma.aiUsage.count({
+        where: { userId: uid, usedAt: { gte: since } },
+      });
 
-      if ((count ?? 0) >= FREE_MONTHLY_LIMIT) {
+      if (count >= FREE_MONTHLY_LIMIT) {
         return NextResponse.json({
           error:   `You've used all ${FREE_MONTHLY_LIMIT} free AI requests this month. Upgrade to Solo or Team for unlimited AI.`,
           upgrade: true,
@@ -386,7 +375,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Build prompt
-    const { system, user: userMsg } = await buildPrompt(tool, body, supabase, user.id, wid);
+    const { system, user: userMsg } = await buildPrompt(tool, body, uid, wid);
 
     // Call OpenAI
     const raw = await callOpenAI(
@@ -400,12 +389,12 @@ export async function POST(req: NextRequest) {
     catch { return NextResponse.json({ error: 'AI returned invalid JSON. Please try again.' }, { status: 500 }); }
 
     // Track usage
-    await supabase.from('ai_usage').insert({ user_id: user.id, workspace_id: wid, tool });
+    await prisma.aiUsage.create({ data: { userId: uid, workspaceId: wid, tool } });
 
     return NextResponse.json({ ok: true, tool, result });
 
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[AI Route]', err);
-    return NextResponse.json({ error: err.message ?? 'AI request failed.' }, { status: 500 });
+    return NextResponse.json({ error: err instanceof Error ? err.message : 'AI request failed.' }, { status: 500 });
   }
 }

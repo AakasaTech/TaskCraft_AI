@@ -1,10 +1,19 @@
-import { createAdminClient } from '@/lib/supabase/admin';
+import { prisma } from '@/lib/prisma';
 import type { NotificationType } from '@/lib/types';
+
+// Every notify* helper below is called with a Profile id (assigneeId,
+// taskOwnerId, etc. all come from Task/TimeEntry/Project relations, which
+// point at Profile). Notification.userId is a FK to User though, so resolve
+// Profile → User before touching the table.
+async function resolveUserId(profileId: string): Promise<string | null> {
+  const profile = await prisma.profile.findUnique({ where: { id: profileId }, select: { userId: true } });
+  return profile?.userId ?? null;
+}
 
 // ── Core create utility ───────────────────────────────────────────────────────
 
 export async function createNotification(params: {
-  userId:       string;
+  userId:       string; // Profile id
   workspaceId?: string;
   type:         NotificationType;
   title:        string;
@@ -12,35 +21,42 @@ export async function createNotification(params: {
   link?:        string;
   metadata?:    Record<string, unknown>;
 }) {
-  const admin = createAdminClient();
-  const { error } = await admin.from('notifications').insert({
-    user_id:      params.userId,
-    workspace_id: params.workspaceId ?? null,
-    type:         params.type,
-    title:        params.title,
-    body:         params.body    ?? null,
-    link:         params.link    ?? null,
-    metadata:     params.metadata ?? {},
-  });
+  try {
+    const userId = await resolveUserId(params.userId);
+    if (!userId) return;
 
-  if (error) {
-    console.error('[notifications] create error:', error.message);
+    await prisma.notification.create({
+      data: {
+        userId,
+        workspaceId: params.workspaceId ?? null,
+        type:        params.type,
+        title:       params.title,
+        body:        params.body ?? null,
+        link:        params.link ?? null,
+        metadata:    (params.metadata ?? {}) as any,
+      },
+    });
+  } catch (err) {
+    console.error('[notifications] create error:', err);
   }
 }
 
 // Helper: avoid duplicate notifications for the same event within a window
-async function notificationExists(userId: string, type: NotificationType, dedupeKey: string) {
-  const admin = createAdminClient();
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const { data } = await admin
-    .from('notifications')
-    .select('id')
-    .eq('user_id', userId)
-    .eq('type', type)
-    .eq('metadata->>dedupe_key', dedupeKey)
-    .gte('created_at', since)
-    .maybeSingle();
-  return !!data;
+async function notificationExists(profileId: string, type: NotificationType, dedupeKey: string) {
+  const userId = await resolveUserId(profileId);
+  if (!userId) return false;
+
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const existing = await prisma.notification.findFirst({
+    where: {
+      userId,
+      type,
+      createdAt: { gte: since },
+      metadata:  { path: ['dedupe_key'], equals: dedupeKey },
+    },
+    select: { id: true },
+  });
+  return !!existing;
 }
 
 // ── Typed helpers ─────────────────────────────────────────────────────────────
@@ -235,55 +251,55 @@ export async function notifyTeamInvitationReceived(params: {
 // ── Due-check batch (called by cron) ─────────────────────────────────────────
 
 export async function runDueNotifications(workspaceId: string) {
-  const admin = createAdminClient();
-
-  const now      = new Date();
-  const in24h    = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
-  const nowIso   = now.toISOString();
+  const now   = new Date();
+  const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
   // Tasks due in ≤ 24h (not done)
-  const { data: dueSoon } = await admin
-    .from('tasks')
-    .select('id, title, due_date, assignee_id')
-    .eq('workspace_id', workspaceId)
-    .not('assignee_id', 'is', null)
-    .neq('status', 'done')
-    .gte('due_date', nowIso)
-    .lte('due_date', in24h);
+  const dueSoon = await prisma.task.findMany({
+    where: {
+      workspaceId,
+      assigneeId: { not: null },
+      status:     { not: 'done' },
+      dueDate:    { gte: now, lte: in24h },
+    },
+    select: { id: true, title: true, dueDate: true, assigneeId: true },
+  });
 
-  for (const task of (dueSoon ?? [])) {
-    if (!task.assignee_id) continue;
+  for (const task of dueSoon) {
+    if (!task.assigneeId || !task.dueDate) continue;
     await notifyTaskDueSoon({
-      userId:      task.assignee_id,
+      userId:      task.assigneeId,
       workspaceId,
       taskId:      task.id,
       taskTitle:   task.title,
-      dueDate:     task.due_date,
+      dueDate:     task.dueDate.toISOString(),
     });
   }
 
   // Overdue tasks (not done)
-  const { data: overdue } = await admin
-    .from('tasks')
-    .select('id, title, due_date, assignee_id')
-    .eq('workspace_id', workspaceId)
-    .not('assignee_id', 'is', null)
-    .neq('status', 'done')
-    .lt('due_date', nowIso);
+  const overdue = await prisma.task.findMany({
+    where: {
+      workspaceId,
+      assigneeId: { not: null },
+      status:     { not: 'done' },
+      dueDate:    { lt: now },
+    },
+    select: { id: true, title: true, dueDate: true, assigneeId: true },
+  });
 
-  for (const task of (overdue ?? [])) {
-    if (!task.assignee_id) continue;
+  for (const task of overdue) {
+    if (!task.assigneeId || !task.dueDate) continue;
     await notifyTaskOverdue({
-      userId:      task.assignee_id,
+      userId:      task.assigneeId,
       workspaceId,
       taskId:      task.id,
       taskTitle:   task.title,
-      dueDate:     task.due_date,
+      dueDate:     task.dueDate.toISOString(),
     });
   }
 
   return {
-    dueSoonCount: (dueSoon ?? []).length,
-    overdueCount: (overdue ?? []).length,
+    dueSoonCount: dueSoon.length,
+    overdueCount: overdue.length,
   };
 }

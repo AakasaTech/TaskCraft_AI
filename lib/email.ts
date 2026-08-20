@@ -1,5 +1,22 @@
 import type { NotificationType } from '@/lib/types';
 
+export interface SendEmailParams {
+  to:      string;
+  subject: string;
+  html:    string;
+}
+
+/**
+ * Send a transactional email (password reset, verification, etc.).
+ * Currently stubbed — wire up Resend, SendGrid, or similar to ship real emails.
+ */
+export async function sendEmail({ to, subject, html }: SendEmailParams): Promise<void> {
+  if (process.env.NODE_ENV === 'development') {
+    console.log('[email:send]', { to, subject, html });
+  }
+  // TODO: implement real email delivery
+}
+
 export interface EmailNotificationParams {
   to:      string;
   type:    NotificationType;

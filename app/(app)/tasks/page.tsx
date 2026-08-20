@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
-import { CheckSquare } from 'lucide-react';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
+import { prisma } from '@/lib/prisma';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { TasksClient } from './_components/TasksClient';
 import type { TaskRich, LabelChip, TaskMember, TaskProject } from './_types';
@@ -9,156 +9,133 @@ import type { TaskStatus, TaskPriority } from '@/lib/types';
 export const metadata: Metadata = { title: 'Tasks' };
 
 export default async function TasksPage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return null;
 
-  // Workspace
-  const { data: membership } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
+  const wid = currentUser.workspace.id;
 
-  const wid = membership?.workspace_id;
-  if (!wid) {
-    return (
-      <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
-        <CheckSquare className="mb-4 h-12 w-12 text-muted-foreground/40" />
-        <p className="text-sm text-muted-foreground">Workspace not found.</p>
-      </div>
-    );
-  }
-
-  // Fetch everything in parallel
+  // Fetch everything in parallel via Prisma
   const [tasksRes, projectsRes, membersRes, labelsRes] = await Promise.all([
-    supabase
-      .from('tasks')
-      .select(`
-        id, workspace_id, title, description, status, priority,
-        due_date, start_date, estimated_hours, actual_hours,
-        billable, hourly_rate, position, project_id, assignee_id,
-        parent_task_id, created_at, completed_at,
-        projects(id, name, color),
-        profiles!tasks_assignee_id_fkey(id, full_name, avatar_url),
-        task_label_assignments(task_labels(id, name, color))
-      `)
-      .eq('workspace_id', wid)
-      .order('position', { ascending: true })
-      .order('created_at', { ascending: false }),
+    prisma.task.findMany({
+      where: { workspaceId: wid },
+      include: {
+        project: { select: { id: true, name: true, color: true } },
+        assignee: { select: { id: true, fullName: true, avatarUrl: true } },
+        labels: {
+          include: {
+            label: { select: { id: true, name: true, color: true } },
+          },
+        },
+      },
+      orderBy: [
+        { position: 'asc' },
+        { createdAt: 'desc' },
+      ],
+    }),
 
-    supabase
-      .from('projects')
-      .select('id, name, color')
-      .eq('workspace_id', wid)
-      .neq('status', 'archived')
-      .order('name'),
+    prisma.project.findMany({
+      where: {
+        workspaceId: wid,
+        status: { not: 'archived' },
+      },
+      select: { id: true, name: true, color: true },
+      orderBy: { name: 'asc' },
+    }),
 
-    supabase
-      .from('workspace_members')
-      .select('user_id, profiles(id, full_name, avatar_url, email)')
-      .eq('workspace_id', wid),
+    prisma.workspaceMember.findMany({
+      where: { workspaceId: wid },
+      include: {
+        user: {
+          select: { id: true, fullName: true, avatarUrl: true, email: true },
+        },
+      },
+    }),
 
-    supabase
-      .from('task_labels')
-      .select('id, name, color')
-      .eq('workspace_id', wid)
-      .order('name'),
+    prisma.taskLabel.findMany({
+      where: { workspaceId: wid },
+      select: { id: true, name: true, color: true },
+      orderBy: { name: 'asc' },
+    }),
   ]);
 
   // Compute subtask counts
   const subtaskCounts: Record<string, { total: number; done: number }> = {};
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const t of (tasksRes.data ?? []) as any[]) {
-    if (t.parent_task_id) {
-      if (!subtaskCounts[t.parent_task_id]) subtaskCounts[t.parent_task_id] = { total: 0, done: 0 };
-      subtaskCounts[t.parent_task_id].total++;
-      if (t.status === 'done') subtaskCounts[t.parent_task_id].done++;
+  for (const t of tasksRes) {
+    if (t.parentTaskId) {
+      if (!subtaskCounts[t.parentTaskId]) subtaskCounts[t.parentTaskId] = { total: 0, done: 0 };
+      subtaskCounts[t.parentTaskId].total++;
+      if (t.status === 'done') subtaskCounts[t.parentTaskId].done++;
     }
   }
 
   // Shape tasks
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tasks: TaskRich[] = (tasksRes.data ?? []).map((t: any) => {
-    const project  = Array.isArray(t.projects) ? t.projects[0] : t.projects;
-    const assignee = Array.isArray(t.profiles)  ? t.profiles[0]  : t.profiles;
-    const labelRows = (t.task_label_assignments ?? []) as any[];
-    const taskLabels: LabelChip[] = labelRows
-      .map((la) => {
-        const lb = Array.isArray(la.task_labels) ? la.task_labels[0] : la.task_labels;
-        return lb ? { id: lb.id, name: lb.name, color: lb.color } : null;
-      })
-      .filter(Boolean) as LabelChip[];
+  const tasks: TaskRich[] = tasksRes.map((t) => {
+    const taskLabels: LabelChip[] = t.labels.map((la) => ({
+      id: la.label.id,
+      name: la.label.name,
+      color: la.label.color,
+    }));
 
     return {
       id:                t.id,
-      workspace_id:      t.workspace_id,
+      workspace_id:      t.workspaceId,
       title:             t.title,
       description:       t.description ?? null,
       status:            t.status as TaskStatus,
       priority:          t.priority as TaskPriority,
-      due_date:          t.due_date ?? null,
-      start_date:        t.start_date ?? null,
-      estimated_hours:   t.estimated_hours ?? null,
-      actual_hours:      t.actual_hours ?? 0,
+      due_date:          t.dueDate ? t.dueDate.toISOString().split('T')[0] : null,
+      start_date:        t.startDate ? t.startDate.toISOString().split('T')[0] : null,
+      estimated_hours:   t.estimatedHours ? Number(t.estimatedHours) : null,
+      actual_hours:      t.actualHours ? Number(t.actualHours) : 0,
       billable:          t.billable,
-      hourly_rate:       t.hourly_rate ?? null,
+      hourly_rate:       t.hourlyRate ? Number(t.hourlyRate) : null,
       position:          t.position,
-      project_id:        t.project_id ?? null,
-      project_name:      project?.name ?? null,
-      project_color:     project?.color ?? null,
-      assignee_id:       t.assignee_id ?? null,
-      assignee_name:     assignee?.full_name ?? null,
-      assignee_avatar:   assignee?.avatar_url ?? null,
-      parent_task_id:    t.parent_task_id ?? null,
+      project_id:        t.projectId ?? null,
+      project_name:      t.project?.name ?? null,
+      project_color:     t.project?.color ?? null,
+      assignee_id:       t.assigneeId ?? null,
+      assignee_name:     t.assignee?.fullName ?? null,
+      assignee_avatar:   t.assignee?.avatarUrl ?? null,
+      parent_task_id:    t.parentTaskId ?? null,
       labels:            taskLabels,
-      subtask_count:     subtaskCounts[t.id]?.total ?? 0,
-      done_subtask_count:subtaskCounts[t.id]?.done ?? 0,
-      created_at:        t.created_at,
-      completed_at:      t.completed_at ?? null,
+      subtask_count:      subtaskCounts[t.id]?.total ?? 0,
+      done_subtask_count: subtaskCounts[t.id]?.done  ?? 0,
+      created_at:        t.createdAt.toISOString(),
+      completed_at:      t.completedAt ? t.completedAt.toISOString() : null,
     };
   });
 
-  // Shape projects
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const projects: TaskProject[] = (projectsRes.data ?? []).map((p: any) => ({
-    id: p.id, name: p.name, color: p.color,
+  const projects: TaskProject[] = projectsRes.map((p) => ({
+    id:    p.id,
+    name:  p.name,
+    color: p.color,
   }));
 
-  // Shape members
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const members: TaskMember[] = (membersRes.data ?? [])
-    .map((m: any) => {
-      const profile = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles;
-      return profile ? {
-        id:         profile.id,
-        full_name:  profile.full_name ?? null,
-        avatar_url: profile.avatar_url ?? null,
-        email:      profile.email ?? '',
-      } : null;
-    })
-    .filter(Boolean) as TaskMember[];
+  const members: TaskMember[] = membersRes.map((m) => ({
+    id:         m.user.id,
+    full_name:  m.user.fullName,
+    avatar_url: m.user.avatarUrl,
+    email:      m.user.email,
+  }));
 
-  // Shape labels
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const taskLabels: LabelChip[] = (labelsRes.data ?? []).map((l: any) => ({
-    id: l.id, name: l.name, color: l.color,
+  const labels: LabelChip[] = labelsRes.map((l) => ({
+    id:    l.id,
+    name:  l.name,
+    color: l.color,
   }));
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-6">
       <PageHeader
         title="Tasks"
-        subtitle={`${tasks.filter((t) => !t.parent_task_id && t.status !== 'done').length} open tasks`}
+        subtitle="Manage and track tasks across all your projects."
       />
       <TasksClient
         tasks={tasks}
         projects={projects}
         members={members}
-        labels={taskLabels}
-        currentUserId={user.id}
+        labels={labels}
+        currentUserId={currentUser.profile.id}
       />
     </div>
   );

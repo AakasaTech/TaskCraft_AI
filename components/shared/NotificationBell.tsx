@@ -8,7 +8,6 @@ import {
   Inbox,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { createClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import type { Notification, NotificationType } from '@/lib/types';
 
@@ -223,30 +222,14 @@ export function NotificationBell({ userId }: NotificationBellProps) {
     fetchNotifications();
   }, [fetchNotifications]);
 
-  // ── Realtime subscription ───────────────────────────────────────────────────
+  // ── Poll for new notifications ──────────────────────────────────────────────
 
   useEffect(() => {
-    const supabase = createClient();
-    const channel  = supabase
-      .channel(`notifications:${userId}`)
-      .on(
-        'postgres_changes',
-        {
-          event:  'INSERT',
-          schema: 'public',
-          table:  'notifications',
-          filter: `user_id=eq.${userId}`,
-        },
-        (payload) => {
-          const n = payload.new as Notification;
-          setNotifications((prev) => [n, ...prev]);
-          setUnreadCount((c) => c + 1);
-        },
-      )
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
-  }, [userId]);
+    const interval = setInterval(() => {
+      fetchNotifications();
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [fetchNotifications]);
 
   // ── Click-outside close ─────────────────────────────────────────────────────
 

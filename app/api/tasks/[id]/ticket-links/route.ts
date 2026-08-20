@@ -1,4 +1,5 @@
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getAuthUser } from '@/lib/auth/helpers';
 
 export const runtime = 'nodejs';
 
@@ -7,18 +8,25 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getAuthUser();
   if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { data, error } = await supabase
-    .from('support_ticket_links')
-    .select('*')
-    .eq('task_id', id);
+  const links = await prisma.supportTicketLink.findMany({ where: { taskId: id } });
 
-  if (error) return Response.json({ error: error.message }, { status: 500 });
-  return Response.json({ data: data ?? [] });
+  return Response.json({
+    data: links.map((l) => ({
+      id:                      l.id,
+      workspace_id:            l.workspaceId,
+      task_id:                 l.taskId,
+      supportcraft_ticket_id:  l.supportcraftTicketId,
+      ticket_title:            l.ticketTitle,
+      ticket_url:              l.ticketUrl,
+      sync_status:             l.syncStatus,
+      created_by:              l.createdById,
+      created_at:              l.createdAt.toISOString(),
+      updated_at:              l.updatedAt.toISOString(),
+    })),
+  });
 }
 
 export async function DELETE(
@@ -30,16 +38,10 @@ export async function DELETE(
   const linkId = searchParams.get('link_id');
   if (!linkId) return Response.json({ error: 'Missing link_id' }, { status: 400 });
 
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getAuthUser();
   if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { error } = await supabase
-    .from('support_ticket_links')
-    .delete()
-    .eq('id', linkId)
-    .eq('task_id', taskId);
+  await prisma.supportTicketLink.deleteMany({ where: { id: linkId, taskId } });
 
-  if (error) return Response.json({ error: error.message }, { status: 500 });
   return Response.json({ ok: true });
 }

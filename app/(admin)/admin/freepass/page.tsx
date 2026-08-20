@@ -1,26 +1,17 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { prisma } from '@/lib/prisma'
 import { GrantFreepassForm } from './_components/GrantFreepassForm'
 import { RevokeFreepassButton } from './_components/RevokeFreepassButton'
-import type { Plan } from '@/lib/types'
 
 export const metadata: Metadata = { title: 'Free Pass — Admin', robots: 'noindex, nofollow' }
 
-interface PaidUserRow {
-  id:              string
-  email:           string
-  full_name:       string | null
-  plan:            Plan
-  plan_expires_at: string | null
-}
-
-function expiryLabel(expiresAt: string | null): { text: string; color: string } {
+function expiryLabel(expiresAt: Date | null): { text: string; color: string } {
   if (!expiresAt) return { text: 'Permanent', color: 'text-emerald-400' }
-  const diff = new Date(expiresAt).getTime() - Date.now()
+  const diff = expiresAt.getTime() - Date.now()
   if (diff < 0) return { text: 'Expired', color: 'text-red-400' }
   const days = Math.ceil(diff / (1000 * 60 * 60 * 24))
-  const date = new Date(expiresAt).toLocaleDateString('en-US', { dateStyle: 'medium' })
+  const date = expiresAt.toLocaleDateString('en-US', { dateStyle: 'medium' })
   return {
     text:  `${date} (${days}d)`,
     color: days < 14 ? 'text-amber-400' : 'text-gray-400',
@@ -28,16 +19,12 @@ function expiryLabel(expiresAt: string | null): { text: string; color: string } 
 }
 
 export default async function FreepassPage() {
-  const db = createAdminClient()
-
-  const { data: paidUsers } = await db
-    .from('profiles')
-    .select('id, email, full_name, plan, plan_expires_at')
-    .neq('plan', 'free')
-    .order('plan_expires_at', { ascending: true, nullsFirst: false })
-    .limit(200)
-
-  const rows = (paidUsers ?? []) as PaidUserRow[]
+  const rows = await prisma.profile.findMany({
+    where: { plan: { not: 'free' } },
+    select: { id: true, email: true, fullName: true, plan: true, planExpiresAt: true },
+    orderBy: { planExpiresAt: { sort: 'asc', nulls: 'last' } },
+    take: 200,
+  })
 
   return (
     <div className="space-y-6">
@@ -72,14 +59,14 @@ export default async function FreepassPage() {
                 </thead>
                 <tbody className="divide-y divide-white/5">
                   {rows.map((u) => {
-                    const expiry = expiryLabel(u.plan_expires_at)
+                    const expiry = expiryLabel(u.planExpiresAt)
                     return (
                       <tr key={u.id} className="hover:bg-white/5 transition-colors">
                         <td className="px-4 py-2.5">
                           <Link href={`/admin/users/${u.id}`} className="font-medium text-white hover:text-blue-400 transition-colors">
-                            {u.full_name ?? u.email}
+                            {u.fullName ?? u.email}
                           </Link>
-                          {u.full_name && <p className="text-[11px] text-gray-500">{u.email}</p>}
+                          {u.fullName && <p className="text-[11px] text-gray-500">{u.email}</p>}
                         </td>
                         <td className="px-4 py-2.5">
                           <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium capitalize ${

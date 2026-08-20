@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { SettingsSection, SettingsRow } from '@/components/shared/SettingsSection';
 import { ProfileClient } from './_components/ProfileClient';
@@ -8,29 +8,24 @@ import { ProfileClient } from './_components/ProfileClient';
 export const metadata: Metadata = { title: 'Profile Settings' };
 
 export default async function ProfileSettingsPage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('full_name, avatar_url, timezone')
-    .eq('id', user.id)
-    .single();
+  const profile = currentUser.profile;
 
-  const initials = profile?.full_name
-    ? profile.full_name.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2)
-    : user.email?.[0]?.toUpperCase() ?? 'U';
+  const initials = profile?.fullName
+    ? profile.fullName.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2)
+    : currentUser.email?.[0]?.toUpperCase() ?? 'U';
 
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader title="Settings" subtitle="Manage your account and preferences" />
 
       <ProfileClient
-        userId={user.id}
-        email={user.email ?? ''}
-        fullName={profile?.full_name ?? ''}
-        avatarUrl={profile?.avatar_url ?? null}
+        userId={currentUser.id}
+        email={currentUser.email ?? ''}
+        fullName={profile?.fullName ?? ''}
+        avatarUrl={profile?.avatarUrl ?? null}
         timezone={profile?.timezone ?? 'UTC'}
         initials={initials}
       />

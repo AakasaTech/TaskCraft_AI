@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from 'node:crypto';
-import { createAdminClient } from '@/lib/supabase/admin';
+import { prisma } from '@/lib/prisma';
 import type { WebhookEventType } from '@/lib/types';
 
 export { WebhookEventType };
@@ -52,16 +52,16 @@ export async function deliverWebhookEvent(params: {
   event:       WebhookEventType;
   data:        Record<string, unknown>;
 }) {
-  const admin = createAdminClient();
+  const webhooks = await prisma.webhook.findMany({
+    where: {
+      workspaceId: params.workspaceId,
+      active:      true,
+      events:      { has: params.event },
+    },
+    select: { id: true, url: true, secret: true },
+  });
 
-  const { data: webhooks } = await admin
-    .from('webhooks')
-    .select('id, url, secret')
-    .eq('workspace_id', params.workspaceId)
-    .eq('active', true)
-    .contains('events', [params.event]);
-
-  if (!webhooks?.length) return;
+  if (!webhooks.length) return;
 
   const envelope: WebhookPayload = {
     id:         randomUUID(),
@@ -75,19 +75,23 @@ export async function deliverWebhookEvent(params: {
     webhooks.map(async (wh) => {
       const { statusCode, response, error } = await sendToEndpoint(wh.url, wh.secret, body, params.event);
 
-      const now = new Date().toISOString();
+      const now = new Date();
       await Promise.all([
-        admin.from('webhook_deliveries').insert({
-          webhook_id:   wh.id,
-          event:        params.event,
-          payload:      envelope,
-          status_code:  statusCode,
-          response,
-          error,
-          delivered_at: statusCode ? now : null,
+        prisma.webhookDelivery.create({
+          data: {
+            webhookId:   wh.id,
+            event:       params.event,
+            payload:     envelope as any,
+            statusCode,
+            response,
+            error,
+            deliveredAt: statusCode ? now : null,
+          },
         }),
-        // Update last_fired_at on the webhook
-        admin.from('webhooks').update({ last_fired_at: now }).eq('id', wh.id),
+        prisma.webhook.update({
+          where: { id: wh.id },
+          data:  { lastFiredAt: now },
+        }),
       ]);
     }),
   );

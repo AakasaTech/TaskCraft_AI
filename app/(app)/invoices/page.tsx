@@ -2,12 +2,12 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Plus, FileText, ExternalLink, CheckCircle2, Clock, XCircle } from 'lucide-react';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
+import { prisma } from '@/lib/prisma';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { Button } from '@/components/ui/button';
-import type { InvoiceSync } from '@/lib/types';
 import { getEffectivePlan } from '@/lib/plan-gates';
 import type { Plan } from '@/lib/types';
 
@@ -28,25 +28,14 @@ function statusBadge(status: string) {
   );
 }
 
-function formatDateRange(from: string | null, to: string | null) {
-  if (!from || !to) return '—';
-  const fmt = (d: string) =>
-    new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-  return `${fmt(from)} – ${fmt(to)}`;
-}
-
 export default async function InvoicesPage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('plan, plan_expires_at')
-    .eq('id', user.id)
-    .single();
-
-  const userPlan = getEffectivePlan((profile?.plan ?? 'free') as Plan, profile?.plan_expires_at ?? null);
+  const userPlan = getEffectivePlan(
+    currentUser.profile.plan as Plan,
+    currentUser.profile.planExpiresAt?.toISOString() ?? null
+  );
 
   if (userPlan === 'free') {
     return (
@@ -57,35 +46,27 @@ export default async function InvoicesPage() {
     );
   }
 
-  const { data: member } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', user.id)
-    .limit(1)
-    .single();
+  const wid = currentUser.workspace.id;
 
-  const workspaceId = member?.workspace_id;
+  const [invoicesRes, bcSettings] = await Promise.all([
+    prisma.invoicesSync.findMany({
+      where: { workspaceId: wid },
+      include: {
+        project: { select: { id: true, name: true, color: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    }),
 
-  const { data: syncs } = workspaceId
-    ? await supabase
-        .from('invoices_sync')
-        .select(`*, project:projects(id, name, color)`)
-        .eq('workspace_id', workspaceId)
-        .order('created_at', { ascending: false })
-        .limit(100)
-    : { data: [] };
-
-  const invoices = (syncs ?? []) as (InvoiceSync & { project?: { id: string; name: string; color: string } | null })[];
-
-  // Check if BillCraft is connected
-  const { data: bcSettings } = workspaceId
-    ? await supabase
-        .from('integration_settings')
-        .select('enabled')
-        .eq('workspace_id', workspaceId)
-        .eq('integration_type', 'billcraft')
-        .single()
-    : { data: null };
+    prisma.integrationSetting.findUnique({
+      where: {
+        workspaceId_integrationType: {
+          workspaceId: wid,
+          integrationType: 'billcraft',
+        },
+      },
+    }),
+  ]);
 
   const billcraftConnected = bcSettings?.enabled ?? false;
 
@@ -114,7 +95,7 @@ export default async function InvoicesPage() {
         </div>
       )}
 
-      {invoices.length === 0 ? (
+      {invoicesRes.length === 0 ? (
         <EmptyState
           icon={FileText}
           title="No invoices yet"
@@ -135,7 +116,6 @@ export default async function InvoicesPage() {
             <thead>
               <tr className="border-b border-border bg-muted/30">
                 <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground">Invoice</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground">Period</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground">Project</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground">Hours</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground">Amount</th>
@@ -145,16 +125,10 @@ export default async function InvoicesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border/50">
-              {invoices.map((inv) => (
+              {invoicesRes.map((inv) => (
                 <tr key={inv.id} className="hover:bg-muted/20 transition-colors">
                   <td className="px-4 py-3">
-                    <p className="font-medium">{inv.invoice_number ?? inv.billcraft_invoice_id.slice(0, 12)}</p>
-                    {inv.entry_count > 0 && (
-                      <p className="text-[11px] text-muted-foreground">{inv.entry_count} entr{inv.entry_count === 1 ? 'y' : 'ies'}</p>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
-                    {formatDateRange(inv.date_from, inv.date_to)}
+                    <p className="font-medium">{inv.billcraftInvoiceId.slice(0, 12)}</p>
                   </td>
                   <td className="px-4 py-3">
                     {inv.project ? (
@@ -167,21 +141,21 @@ export default async function InvoicesPage() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-right text-xs tabular-nums">
-                    {inv.total_hours != null ? `${Number(inv.total_hours).toFixed(2)} h` : '—'}
+                    {inv.totalHours != null ? `${Number(inv.totalHours).toFixed(2)} h` : '—'}
                   </td>
                   <td className="px-4 py-3 text-right text-xs font-semibold tabular-nums">
-                    {inv.total_amount != null
-                      ? new Intl.NumberFormat(undefined, { style: 'currency', currency: inv.currency }).format(Number(inv.total_amount))
+                    {inv.totalAmount != null
+                      ? new Intl.NumberFormat(undefined, { style: 'currency', currency: inv.currency }).format(Number(inv.totalAmount))
                       : '—'
                     }
                   </td>
                   <td className="px-4 py-3">{statusBadge(inv.status)}</td>
                   <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
-                    {new Date(inv.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                    {inv.createdAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                   </td>
                   <td className="px-4 py-3">
                     <a
-                      href={`https://billcraft.aakasa.dev/invoices/${inv.billcraft_invoice_id}`}
+                      href={`https://billcraft.aakasa.dev/invoices/${inv.billcraftInvoiceId}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="rounded-lg p-1.5 text-muted-foreground hover:text-foreground transition-colors inline-flex"

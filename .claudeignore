@@ -1,0 +1,73 @@
+# Claude-specific ignores
+# Files that should never be included in Claude context or analysis
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Build and compilation artifacts
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# Dependencies and packages
+node_modules/
+.pnp
+.pnp.js
+
+# Generated files
+lib/generated/
+components.json
+
+# Configuration files that don't need context
+next.config.ts
+tailwind.config.ts
+postcss.config.mjs
+next-env.d.ts
+
+# Test coverage
+coverage/
+.nyc_output
+
+# Logs and debug
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build tools
+ecosystem.config.js
+
+# IDE and editor artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# SSL and certs
+*.pem
+
+# Temporary files
+tmp/
+.temp/
+
+# Database files (if any)
+*.sqlite
+*.db
+
+# Docker files (already in .gitignore)
+Dockerfile
+docker-compose*
+
+# System temp files
+*~

@@ -4,11 +4,12 @@ import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
-import { CheckCircle, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { createClient } from '@/lib/supabase/client';
+import { signIn } from 'next-auth/react';
+import { registerUser } from './actions';
 
 function GoogleIcon() {
   return (
@@ -33,7 +34,6 @@ function RegisterContent() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [emailSent, setEmailSent] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -42,64 +42,41 @@ function RegisterContent() {
       return;
     }
     setLoading(true);
-    const supabase = createClient();
-    const { data, error } = await supabase.auth.signUp({
+
+    const res = await registerUser({
       email,
       password,
-      options: {
-        data: { full_name: fullName, plan },
-        emailRedirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback`,
-      },
+      fullName,
+      plan,
     });
-    if (error) {
-      toast.error(error.message);
+
+    if (res.error) {
+      toast.error(res.error);
       setLoading(false);
       return;
     }
-    if (data.session) {
-      router.push('/dashboard');
-      router.refresh();
-    } else {
-      setEmailSent(true);
-      setLoading(false);
+
+    // Auto sign in with the new credentials
+    const loginRes = await signIn('credentials', {
+      email,
+      password,
+      redirect: false,
+    });
+
+    if (loginRes?.error) {
+      toast.success('Account created! Please sign in.');
+      router.push('/login');
+      return;
     }
+
+    toast.success('Account created successfully!');
+    router.push('/dashboard');
+    router.refresh();
   }
 
   function handleGoogle() {
     setGoogleLoading(true);
-    window.location.href = `/api/auth/google?next=/dashboard`;
-  }
-
-  if (emailSent) {
-    return (
-      <div className="rounded-2xl border border-border bg-card p-8 shadow-sm text-center">
-        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
-          <CheckCircle className="h-7 w-7 text-primary" />
-        </div>
-        <h1 className="text-xl font-bold">Check your inbox</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          We sent a confirmation link to{' '}
-          <strong className="text-foreground">{email}</strong>.
-          Open it to activate your account.
-        </p>
-        <p className="mt-4 text-xs text-muted-foreground">
-          Didn&apos;t get it? Check your spam folder or{' '}
-          <button
-            className="text-primary hover:underline"
-            onClick={() => setEmailSent(false)}
-          >
-            try again
-          </button>
-          .
-        </p>
-        <Link
-          href="/login"
-          className="mt-6 inline-block text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          Back to sign in
-        </Link>
-      </div>
-    );
+    signIn('google', { callbackUrl: '/dashboard' });
   }
 
   const busy = loading || googleLoading;

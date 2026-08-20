@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/lib/supabase/admin';
+import { prisma } from '@/lib/prisma';
 import { authenticateApiKey, hasScope } from '@/lib/api-auth';
 import { apiSuccess, apiError } from '@/lib/api-response';
 
@@ -9,9 +9,7 @@ export async function GET(req: Request) {
   if (!ctx) return apiError('UNAUTHORIZED', 'Invalid or missing API key.', 401);
   if (!hasScope(ctx, 'read')) return apiError('FORBIDDEN', 'Read scope required.', 403);
 
-  // Check solo+ plan
-  const admin = createAdminClient();
-  const { data: profile } = await admin.from('profiles').select('plan').eq('id', ctx.userId).single();
+  const profile = await prisma.profile.findUnique({ where: { id: ctx.userId }, select: { plan: true } });
   if (!['solo', 'team'].includes(profile?.plan ?? '')) {
     return apiError('PLAN_REQUIRED', 'Reports API requires a Solo or Team plan.', 403);
   }
@@ -23,24 +21,20 @@ export async function GET(req: Request) {
   const wid      = ctx.workspaceId;
 
   if (type === 'summary') {
-    const [projectsRes, tasksRes, timeRes] = await Promise.all([
-      admin.from('projects').select('id, status', { count: 'exact' }).eq('workspace_id', wid),
-      admin.from('tasks').select('id, status', { count: 'exact' }).eq('workspace_id', wid),
-      admin.from('time_entries')
-        .select('duration_minutes, billable, hourly_rate')
-        .eq('workspace_id', wid)
-        .not('duration_minutes', 'is', null),
+    const [projects, tasks, entries] = await Promise.all([
+      prisma.project.findMany({ where: { workspaceId: wid }, select: { id: true, status: true } }),
+      prisma.task.findMany({ where: { workspaceId: wid }, select: { id: true, status: true } }),
+      prisma.timeEntry.findMany({
+        where: { workspaceId: wid, durationMinutes: { not: null } },
+        select: { durationMinutes: true, billable: true, hourlyRate: true },
+      }),
     ]);
 
-    const entries = timeRes.data ?? [];
-    const totalMins    = entries.reduce((s, e) => s + (e.duration_minutes ?? 0), 0);
-    const billableMins = entries.filter((e) => e.billable).reduce((s, e) => s + (e.duration_minutes ?? 0), 0);
+    const totalMins    = entries.reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
+    const billableMins = entries.filter((e) => e.billable).reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
     const billableValue = entries
-      .filter((e) => e.billable && e.hourly_rate)
-      .reduce((s, e) => s + ((e.duration_minutes ?? 0) / 60) * (e.hourly_rate ?? 0), 0);
-
-    const tasks    = tasksRes.data ?? [];
-    const projects = projectsRes.data ?? [];
+      .filter((e) => e.billable && e.hourlyRate)
+      .reduce((s, e) => s + ((e.durationMinutes ?? 0) / 60) * Number(e.hourlyRate ?? 0), 0);
 
     return apiSuccess({
       projects: {
@@ -49,9 +43,9 @@ export async function GET(req: Request) {
         completed: projects.filter((p) => p.status === 'completed').length,
       },
       tasks: {
-        total:     tasks.length,
-        done:      tasks.filter((t) => t.status === 'done').length,
-        in_progress: tasks.filter((t) => t.status === 'in_progress').length,
+        total:           tasks.length,
+        done:            tasks.filter((t) => t.status === 'done').length,
+        in_progress:     tasks.filter((t) => t.status === 'in_progress').length,
         completion_rate: tasks.length ? Math.round((tasks.filter((t) => t.status === 'done').length / tasks.length) * 100) : 0,
       },
       time: {
@@ -64,29 +58,30 @@ export async function GET(req: Request) {
   }
 
   if (type === 'time') {
-    let query = admin
-      .from('time_entries')
-      .select('project_id, user_id, duration_minutes, billable, hourly_rate, started_at, projects(name)')
-      .eq('workspace_id', wid)
-      .not('duration_minutes', 'is', null)
-      .order('started_at', { ascending: false })
-      .limit(500);
+    const entries = await prisma.timeEntry.findMany({
+      where: {
+        workspaceId: wid,
+        durationMinutes: { not: null },
+        ...(dateFrom || dateTo ? { startTime: {
+          ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+          ...(dateTo   ? { lte: new Date(dateTo) }   : {}),
+        } } : {}),
+      },
+      select: {
+        projectId: true, userId: true, durationMinutes: true, billable: true, hourlyRate: true, startTime: true,
+        project: { select: { name: true } },
+      },
+      orderBy: { startTime: 'desc' },
+      take: 500,
+    });
 
-    if (dateFrom) query = query.gte('started_at', dateFrom);
-    if (dateTo)   query = query.lte('started_at', dateTo);
-
-    const { data, error } = await query;
-    if (error) return apiError('INTERNAL', error.message, 500);
-
-    // Group by project
     const byProject: Record<string, { name: string; minutes: number; billable_minutes: number; value: number }> = {};
-    for (const e of (data ?? [])) {
-      const pid  = e.project_id ?? 'no_project';
-      const proj = Array.isArray(e.projects) ? e.projects[0] : e.projects;
-      if (!byProject[pid]) byProject[pid] = { name: proj?.name ?? 'No project', minutes: 0, billable_minutes: 0, value: 0 };
-      byProject[pid].minutes          += e.duration_minutes ?? 0;
-      if (e.billable) byProject[pid].billable_minutes += e.duration_minutes ?? 0;
-      if (e.billable && e.hourly_rate) byProject[pid].value += ((e.duration_minutes ?? 0) / 60) * e.hourly_rate;
+    for (const e of entries) {
+      const pid = e.projectId ?? 'no_project';
+      if (!byProject[pid]) byProject[pid] = { name: e.project?.name ?? 'No project', minutes: 0, billable_minutes: 0, value: 0 };
+      byProject[pid].minutes += e.durationMinutes ?? 0;
+      if (e.billable) byProject[pid].billable_minutes += e.durationMinutes ?? 0;
+      if (e.billable && e.hourlyRate) byProject[pid].value += ((e.durationMinutes ?? 0) / 60) * Number(e.hourlyRate);
     }
 
     return apiSuccess({

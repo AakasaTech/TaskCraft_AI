@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { getAuthUser } from '@/lib/auth/helpers';
 import { acceptInvitation } from '../actions';
 
 export const metadata: Metadata = { title: 'Accept Invitation' };
@@ -29,8 +29,7 @@ export default async function AcceptInvitePage({ searchParams }: Props) {
   }
 
   // Must be logged in
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getAuthUser();
   if (!user) redirect(`/login?redirect=/team/invite?token=${token}`);
 
   const result = await acceptInvitation(token);
@@ -50,6 +49,5 @@ export default async function AcceptInvitePage({ searchParams }: Props) {
     );
   }
 
-  // Redirect to dashboard on success
   redirect('/dashboard');
 }

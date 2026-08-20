@@ -1,5 +1,6 @@
-import { createClient } from '@/lib/supabase/server';
 import https from 'node:https';
+import { prisma } from '@/lib/prisma';
+import { getAuthUser } from '@/lib/auth/helpers';
 
 export const runtime = 'nodejs';
 
@@ -82,17 +83,14 @@ export async function POST(req: Request) {
     const { subscriptionID } = (await req.json()) as { subscriptionID: string };
     if (!subscriptionID) return Response.json({ error: 'Missing subscriptionID' }, { status: 400 });
 
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const user = await getAuthUser();
     if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
     // Verify this subscription belongs to the user
-    const { data: sub } = await supabase
-      .from('subscriptions')
-      .select('id')
-      .eq('user_id', user.id)
-      .eq('paypal_subscription_id', subscriptionID)
-      .maybeSingle();
+    const sub = await prisma.subscription.findFirst({
+      where: { userId: user.id, paypalSubscriptionId: subscriptionID },
+      select: { id: true },
+    });
 
     if (!sub) return Response.json({ error: 'Subscription not found' }, { status: 404 });
 
@@ -101,10 +99,10 @@ export async function POST(req: Request) {
     await cancelPayPalSubscription(subscriptionID, token);
 
     // Mark as cancelled locally — webhook will also fire but this gives immediate feedback
-    await supabase
-      .from('subscriptions')
-      .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
-      .eq('paypal_subscription_id', subscriptionID);
+    await prisma.subscription.updateMany({
+      where: { paypalSubscriptionId: subscriptionID },
+      data:  { status: 'cancelled', cancelledAt: new Date() },
+    });
 
     return Response.json({ ok: true });
   } catch (err) {

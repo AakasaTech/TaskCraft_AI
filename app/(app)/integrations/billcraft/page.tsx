@@ -2,7 +2,8 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { ChevronLeft } from 'lucide-react';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getCurrentUser } from '@/lib/auth/helpers';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
 import { BillCraftSettingsClient } from './_components/BillCraftSettingsClient';
@@ -12,22 +13,11 @@ import type { Plan } from '@/lib/types';
 export const metadata: Metadata = { title: 'BillCraft AI Integration' };
 
 export default async function BillCraftIntegrationPage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  const [profileRes, memberRes] = await Promise.all([
-    supabase.from('profiles').select('plan, plan_expires_at').eq('id', user.id).single(),
-    supabase.from('workspace_members')
-      .select('workspace_id, role')
-      .eq('user_id', user.id)
-      .in('role', ['owner', 'admin'])
-      .limit(1)
-      .single(),
-  ]);
-
-  const userPlan    = getEffectivePlan((profileRes.data?.plan ?? 'free') as Plan, profileRes.data?.plan_expires_at ?? null);
-  const workspaceId = memberRes.data?.workspace_id;
+  const userPlan    = getEffectivePlan(currentUser.profile.plan as Plan, currentUser.profile.planExpiresAt?.toISOString() ?? null);
+  const workspaceId = currentUser.workspace.id;
 
   if (userPlan === 'free') {
     return (
@@ -38,14 +28,10 @@ export default async function BillCraftIntegrationPage() {
     );
   }
 
-  const { data: settings } = workspaceId
-    ? await supabase
-        .from('integration_settings')
-        .select('enabled, config')
-        .eq('workspace_id', workspaceId)
-        .eq('integration_type', 'billcraft')
-        .single()
-    : { data: null };
+  const settings = await prisma.integrationSetting.findUnique({
+    where: { workspaceId_integrationType: { workspaceId, integrationType: 'billcraft' } },
+    select: { enabled: true, config: true },
+  });
 
   const cfg             = (settings?.config ?? {}) as Record<string, string>;
   const connected       = settings?.enabled ?? false;

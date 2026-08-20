@@ -1,54 +1,35 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { prisma } from '@/lib/prisma'
 import { ToggleActiveButton } from './ToggleActiveButton'
 import { ChevronRight } from 'lucide-react'
 
 export const metadata: Metadata = { title: 'Users — Admin', robots: 'noindex, nofollow' }
 
-function fmtDate(d: string | null | undefined) {
+function fmtDate(d: Date | null | undefined) {
   if (!d) return '—'
-  return new Date(d).toLocaleDateString('en-US', { dateStyle: 'medium' })
+  return d.toLocaleDateString('en-US', { dateStyle: 'medium' })
 }
 
 function Badge({ label, color }: { label: string; color: string }) {
   return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${color}`}>{label}</span>
 }
 
-interface ProfileRow {
-  id:              string
-  email:           string
-  full_name:       string | null
-  plan:            string
-  plan_expires_at: string | null
-  is_admin:        boolean
-  created_at:      string
-}
-
 export default async function AdminUsersPage() {
-  const db = createAdminClient()
+  const profiles = await prisma.profile.findMany({
+    select: {
+      id: true, userId: true, email: true, fullName: true, plan: true, planExpiresAt: true,
+      isAdmin: true, createdAt: true, user: { select: { bannedUntil: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 500,
+  })
 
-  const [profilesRes, authRes] = await Promise.all([
-    db.from('profiles')
-      .select('id, email, full_name, plan, plan_expires_at, is_admin, created_at')
-      .order('created_at', { ascending: false })
-      .limit(500),
-    db.auth.admin.listUsers({ page: 1, perPage: 1000 }),
-  ])
+  const now = Date.now()
+  const isBannedFor = (u: (typeof profiles)[number]) => !!(u.user.bannedUntil && u.user.bannedUntil.getTime() > now)
 
-  const profiles  = (profilesRes.data ?? []) as ProfileRow[]
-  const authUsers = authRes.data?.users ?? []
-
-  const now    = Date.now()
-  const banMap = new Map<string, boolean>(
-    authUsers.map((au) => [
-      au.id,
-      !!(au.banned_until && new Date(au.banned_until).getTime() > now),
-    ]),
-  )
-
-  const activeCount    = profiles.filter((u) => !banMap.get(u.id)).length
-  const suspendedCount = profiles.filter((u) => banMap.get(u.id)).length
+  const activeCount    = profiles.filter((u) => !isBannedFor(u)).length
+  const suspendedCount = profiles.filter((u) => isBannedFor(u)).length
 
   return (
     <div className="space-y-6">
@@ -72,13 +53,13 @@ export default async function AdminUsersPage() {
           </thead>
           <tbody className="divide-y divide-white/5">
             {profiles.map((u) => {
-              const isBanned = banMap.get(u.id) ?? false
+              const isBanned = isBannedFor(u)
               return (
                 <tr key={u.id} className={`hover:bg-white/5 transition-colors ${isBanned ? 'opacity-60' : ''}`}>
                   <td className="px-4 py-3">
                     <div className="font-medium text-white">
-                      {u.full_name || '—'}
-                      {u.is_admin && (
+                      {u.fullName || '—'}
+                      {u.isAdmin && (
                         <span className="ml-1.5 rounded bg-amber-500/20 px-1 py-0.5 text-[9px] font-bold uppercase text-amber-400">
                           Admin
                         </span>
@@ -96,8 +77,8 @@ export default async function AdminUsersPage() {
                         'bg-gray-500/20 text-gray-400'
                       }
                     />
-                    {u.plan_expires_at && (
-                      <div className="mt-0.5 text-[10px] text-gray-500">until {fmtDate(u.plan_expires_at)}</div>
+                    {u.planExpiresAt && (
+                      <div className="mt-0.5 text-[10px] text-gray-500">until {fmtDate(u.planExpiresAt)}</div>
                     )}
                   </td>
 
@@ -108,11 +89,11 @@ export default async function AdminUsersPage() {
                     />
                   </td>
 
-                  <td className="px-4 py-3 text-xs text-gray-400">{fmtDate(u.created_at)}</td>
+                  <td className="px-4 py-3 text-xs text-gray-400">{fmtDate(u.createdAt)}</td>
 
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <ToggleActiveButton userId={u.id} isBanned={isBanned} />
+                      <ToggleActiveButton userId={u.userId} isBanned={isBanned} />
                       <Link
                         href={`/admin/users/${u.id}`}
                         className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs text-gray-400 hover:bg-white/10 hover:text-white transition-colors"

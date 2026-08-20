@@ -4,10 +4,8 @@ import { useState, useTransition, useRef } from 'react';
 import { toast } from 'sonner';
 import { Loader2, Upload } from 'lucide-react';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { SettingsSection, SettingsRow } from '@/components/shared/SettingsSection';
-import { createClient } from '@/lib/supabase/client';
 import { updateProfile } from '../actions';
 
 const TIMEZONES = [
@@ -61,16 +59,21 @@ export function ProfileClient({ userId, email, fullName, avatarUrl, timezone, in
 
     setUploading(true);
     try {
-      const supabase  = createClient();
-      const path      = `${userId}/avatar.${ext}`;
-      const { error } = await supabase.storage
-        .from('avatars')
-        .upload(path, file, { upsert: true, contentType: file.type });
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('folder', 'avatars');
 
-      if (error) throw error;
+      const resUpload = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
 
-      const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(path);
-      const newUrl = `${urlData.publicUrl}?t=${Date.now()}`;
+      if (!resUpload.ok) {
+        const errJson = await resUpload.json();
+        throw new Error(errJson.error || 'Upload failed');
+      }
+
+      const { url: newUrl } = await resUpload.json();
 
       const res = await updateProfile({ avatar_url: newUrl });
       if (res.error) throw new Error(res.error);

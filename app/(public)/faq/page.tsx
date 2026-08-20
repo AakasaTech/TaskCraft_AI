@@ -12,7 +12,7 @@ const faqs = [
   { q: 'Can I convert SupportCraft tickets into tasks?', a: 'Yes. With the SupportCraft AI integration enabled, you can push any support ticket into TaskCraft AI as a task — complete with the ticket title, description, and assigned agent.' },
   { q: 'What is the Team plan?', a: 'The Team plan adds multi-user workspaces, member invitations, role-based permissions (owner/admin/member/viewer), task assignment, and team-level time reports.' },
   { q: 'How is billing handled?', a: 'Paid subscriptions are processed via PayPal. You can cancel at any time from the Billing settings page. Access continues until the end of the current billing period.' },
-  { q: 'Is my data secure?', a: 'All data is stored in Supabase PostgreSQL with row-level security. Connections are encrypted with TLS. We do not share your data with third parties.' },
+  { q: 'Is my data secure?', a: 'All data is stored in a managed Neon PostgreSQL database, access-scoped to your workspace. Connections are encrypted with TLS. We do not share your data with third parties.' },
   { q: 'Can I export my data?', a: 'Yes. You can export time reports as CSV, and task lists as JSON or CSV, from the Reports and Settings pages.' },
 ];
 

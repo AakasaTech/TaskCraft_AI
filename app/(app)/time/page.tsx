@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
+import { prisma } from '@/lib/prisma';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { TimeClient } from './_components/TimeClient';
 import type { TimeEntryRich, RunningTimer, TimeProject, TimeTask } from './_types';
@@ -8,128 +9,130 @@ import type { TimeEntryRich, RunningTimer, TimeProject, TimeTask } from './_type
 export const metadata: Metadata = { title: 'Time Tracking' };
 
 export default async function TimePage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  const { data: member } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', user.id)
-    .single();
+  const wid = currentUser.workspace.id;
+  const uid = currentUser.profile.id;
 
-  if (!member) redirect('/login');
-  const wid = member.workspace_id;
-  const uid = user.id;
-
-  // Last 30 days for the weekly navigation to have enough data
+  // Last 30 days for weekly navigation
   const since = new Date();
   since.setDate(since.getDate() - 30);
 
   const [entriesRes, runningRes, projectsRes, tasksRes] = await Promise.all([
-    supabase
-      .from('time_entries')
-      .select(`
-        id, workspace_id, task_id, project_id, user_id,
-        description, start_time, end_time, duration_minutes,
-        billable, hourly_rate, invoice_status, source, created_at,
-        tasks(title),
-        projects(name, color, clients(name))
-      `)
-      .eq('user_id', uid)
-      .eq('workspace_id', wid)
-      .not('end_time', 'is', null)
-      .gte('start_time', since.toISOString())
-      .order('start_time', { ascending: false }),
+    prisma.timeEntry.findMany({
+      where: {
+        userId: uid,
+        workspaceId: wid,
+        endTime: { not: null },
+        startTime: { gte: since },
+      },
+      include: {
+        task: { select: { title: true } },
+        project: {
+          select: {
+            name: true,
+            color: true,
+            client: { select: { name: true } },
+          },
+        },
+      },
+      orderBy: { startTime: 'desc' },
+    }),
 
-    supabase
-      .from('time_entries')
-      .select('id, description, start_time, task_id, project_id, billable, hourly_rate, tasks(title), projects(name, color)')
-      .eq('user_id', uid)
-      .eq('workspace_id', wid)
-      .is('end_time', null)
-      .maybeSingle(),
+    prisma.timeEntry.findFirst({
+      where: {
+        userId: uid,
+        workspaceId: wid,
+        endTime: null,
+      },
+      include: {
+        task: { select: { title: true } },
+        project: { select: { name: true, color: true } },
+      },
+    }),
 
-    supabase
-      .from('projects')
-      .select('id, name, color, hourly_rate, clients(name)')
-      .eq('workspace_id', wid)
-      .neq('status', 'archived')
-      .order('name'),
+    prisma.project.findMany({
+      where: {
+        workspaceId: wid,
+        status: { not: 'archived' },
+      },
+      select: {
+        id: true,
+        name: true,
+        color: true,
+        hourlyRate: true,
+        client: { select: { name: true } },
+      },
+      orderBy: { name: 'asc' },
+    }),
 
-    supabase
-      .from('tasks')
-      .select('id, title, project_id')
-      .eq('workspace_id', wid)
-      .is('parent_task_id', null)
-      .neq('status', 'done')
-      .order('title'),
+    prisma.task.findMany({
+      where: {
+        workspaceId: wid,
+        parentTaskId: null,
+        status: { not: 'done' },
+      },
+      select: { id: true, title: true, projectId: true },
+      orderBy: { title: 'asc' },
+    }),
   ]);
 
   // Shape time entries
-  const entries: TimeEntryRich[] = (entriesRes.data ?? []).map((e) => {
-    const task    = Array.isArray(e.tasks)    ? e.tasks[0]    : e.tasks;
-    const proj    = Array.isArray(e.projects) ? e.projects[0] : e.projects;
-    const client  = proj ? (Array.isArray((proj as any).clients) ? (proj as any).clients[0] : (proj as any).clients) : null;
+  const entries: TimeEntryRich[] = entriesRes.map((e) => {
     return {
       id:               e.id,
-      workspace_id:     e.workspace_id,
-      task_id:          e.task_id,
-      project_id:       e.project_id,
-      user_id:          e.user_id,
+      workspace_id:     e.workspaceId,
+      task_id:          e.taskId,
+      project_id:       e.projectId,
+      user_id:          e.userId,
       description:      e.description,
-      start_time:       e.start_time,
-      end_time:         e.end_time,
-      duration_minutes: e.duration_minutes,
+      start_time:       e.startTime.toISOString(),
+      end_time:         e.endTime?.toISOString() ?? null,
+      duration_minutes: e.durationMinutes,
       billable:         e.billable,
-      hourly_rate:      e.hourly_rate,
-      invoice_status:   e.invoice_status as TimeEntryRich['invoice_status'],
+      hourly_rate:      e.hourlyRate ? Number(e.hourlyRate) : null,
+      invoice_status:   e.invoiceStatus as TimeEntryRich['invoice_status'],
       source:           e.source as TimeEntryRich['source'],
-      created_at:       e.created_at,
-      task_title:       task?.title ?? null,
-      project_name:     proj?.name ?? null,
-      project_color:    proj?.color ?? null,
-      client_name:      client?.name ?? null,
+      created_at:       e.createdAt.toISOString(),
+      task_title:       e.task?.title ?? null,
+      project_name:     e.project?.name ?? null,
+      project_color:    e.project?.color ?? null,
+      client_name:      e.project?.client?.name ?? null,
     };
   });
 
   // Shape running timer
   let running: RunningTimer | null = null;
-  const r = runningRes.data;
-  if (r) {
-    const rTask = Array.isArray(r.tasks)    ? r.tasks[0]    : r.tasks;
-    const rProj = Array.isArray(r.projects) ? r.projects[0] : r.projects;
+  if (runningRes) {
     running = {
-      id:           r.id,
-      description:  r.description,
-      start_time:   r.start_time,
-      task_id:      r.task_id,
-      task_title:   rTask?.title ?? null,
-      project_id:   r.project_id,
-      project_name: rProj?.name ?? null,
-      project_color: rProj?.color ?? null,
-      billable:     r.billable,
-      hourly_rate:  r.hourly_rate,
+      id:            runningRes.id,
+      description:   runningRes.description,
+      start_time:    runningRes.startTime.toISOString(),
+      task_id:       runningRes.taskId,
+      task_title:    runningRes.task?.title ?? null,
+      project_id:    runningRes.projectId,
+      project_name:  runningRes.project?.name ?? null,
+      project_color: runningRes.project?.color ?? null,
+      billable:      runningRes.billable,
+      hourly_rate:   runningRes.hourlyRate ? Number(runningRes.hourlyRate) : null,
     };
   }
 
   // Shape projects
-  const projects: TimeProject[] = (projectsRes.data ?? []).map((p) => {
-    const c = Array.isArray((p as any).clients) ? (p as any).clients[0] : (p as any).clients;
-    return {
-      id:          p.id,
-      name:        p.name,
-      color:       p.color,
-      hourly_rate: p.hourly_rate,
-      client_name: c?.name ?? null,
-    };
-  });
+  const projects: TimeProject[] = projectsRes.map((p) => ({
+    id:          p.id,
+    name:        p.name,
+    color:       p.color,
+    hourly_rate: p.hourlyRate ? Number(p.hourlyRate) : null,
+    client_name: p.client?.name ?? null,
+  }));
 
   // Shape tasks
-  const tasks: TimeTask[] = (tasksRes.data ?? []).map((t) => ({
+  const tasks: TimeTask[] = tasksRes.map((t) => ({
     id:         t.id,
     title:      t.title,
-    project_id: t.project_id,
+    project_id: t.projectId,
   }));
 
   return (

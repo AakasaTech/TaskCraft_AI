@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { createAdminClient } from '@/lib/supabase/admin';
+import { prisma } from '@/lib/prisma';
 import type { ApiScope } from '@/lib/types';
 
 export interface ApiContext {
@@ -14,33 +14,39 @@ export async function authenticateApiKey(req: Request): Promise<ApiContext | nul
   if (!authHeader.startsWith('Bearer ')) return null;
 
   const key = authHeader.slice(7).trim();
-  if (!key)  return null;
+  if (!key) return null;
 
-  const hash  = createHash('sha256').update(key).digest('hex');
-  const admin = createAdminClient();
+  const hash = createHash('sha256').update(key).digest('hex');
 
-  const { data } = await admin
-    .from('api_keys')
-    .select('id, workspace_id, user_id, scopes, revoked_at, expires_at')
-    .eq('key_hash', hash)
-    .maybeSingle();
+  const apiKey = await prisma.apiKey.findUnique({
+    where: { keyHash: hash },
+    select: {
+      id:          true,
+      workspaceId: true,
+      userId:      true,
+      scopes:      true,
+      revokedAt:   true,
+      expiresAt:   true,
+    },
+  });
 
-  if (!data)                                                       return null;
-  if (data.revoked_at)                                             return null;
-  if (data.expires_at && new Date(data.expires_at) < new Date())  return null;
+  if (!apiKey) return null;
+  if (apiKey.revokedAt) return null;
+  if (apiKey.expiresAt && apiKey.expiresAt < new Date()) return null;
 
   // Fire-and-forget last_used_at update
-  void admin
-    .from('api_keys')
-    .update({ last_used_at: new Date().toISOString() })
-    .eq('id', data.id)
-    .then(undefined, console.error);
+  void prisma.apiKey
+    .update({
+      where: { id: apiKey.id },
+      data:  { lastUsedAt: new Date() },
+    })
+    .catch(console.error);
 
   return {
-    userId:      data.user_id,
-    workspaceId: data.workspace_id,
-    scopes:      data.scopes as ApiScope[],
-    keyId:       data.id,
+    userId:      apiKey.userId,
+    workspaceId: apiKey.workspaceId,
+    scopes:      apiKey.scopes as ApiScope[],
+    keyId:       apiKey.id,
   };
 }
 

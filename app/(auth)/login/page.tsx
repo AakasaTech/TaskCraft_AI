@@ -8,7 +8,7 @@ import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { createClient } from '@/lib/supabase/client';
+import { signIn } from 'next-auth/react';
 
 function GoogleIcon() {
   return (
@@ -24,7 +24,7 @@ function GoogleIcon() {
 function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = searchParams.get('next') ?? '/dashboard';
+  const next = searchParams.get('redirect') || searchParams.get('next') || '/dashboard';
   const errorParam = searchParams.get('error');
 
   const [email, setEmail] = useState('');
@@ -40,20 +40,30 @@ function LoginContent() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) {
-      toast.error(error.message);
+    try {
+      const res = await signIn('credentials', {
+        email,
+        password,
+        redirect: false,
+      });
+
+      if (res?.error) {
+        toast.error('Invalid email or password.');
+        setLoading(false);
+        return;
+      }
+
+      router.push(next);
+      router.refresh();
+    } catch {
+      toast.error('An unexpected error occurred during sign in.');
       setLoading(false);
-      return;
     }
-    router.push(next);
-    router.refresh();
   }
 
   function handleGoogle() {
     setGoogleLoading(true);
-    window.location.href = `/api/auth/google?next=${encodeURIComponent(next)}`;
+    signIn('google', { callbackUrl: next });
   }
 
   const busy = loading || googleLoading;

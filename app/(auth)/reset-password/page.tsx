@@ -1,15 +1,18 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
 import { Eye, EyeOff, Loader2, ShieldCheck } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { createClient } from '@/lib/supabase/client';
+import { resetPasswordWithToken } from '../forgot-password/actions';
 
-export default function ResetPasswordPage() {
+function ResetPasswordContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const token = searchParams.get('token') || '';
+
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -17,6 +20,10 @@ export default function ResetPasswordPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!token) {
+      toast.error('Invalid or missing reset token.');
+      return;
+    }
     if (password.length < 8) {
       toast.error('Password must be at least 8 characters.');
       return;
@@ -26,16 +33,16 @@ export default function ResetPasswordPage() {
       return;
     }
     setLoading(true);
-    const supabase = createClient();
-    const { error } = await supabase.auth.updateUser({ password });
-    if (error) {
-      toast.error(error.message);
+
+    const res = await resetPasswordWithToken(token, password);
+    if (res.error) {
+      toast.error(res.error);
       setLoading(false);
       return;
     }
-    toast.success('Password updated. You are now signed in.');
-    router.push('/dashboard');
-    router.refresh();
+
+    toast.success('Password updated! Please sign in with your new password.');
+    router.push('/login');
   }
 
   return (
@@ -99,5 +106,13 @@ export default function ResetPasswordPage() {
         </button>
       </form>
     </div>
+  );
+}
+
+export default function ResetPasswordPage() {
+  return (
+    <Suspense>
+      <ResetPasswordContent />
+    </Suspense>
   );
 }

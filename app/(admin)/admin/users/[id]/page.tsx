@@ -1,15 +1,15 @@
 import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { prisma } from '@/lib/prisma'
+import { getAuthUser } from '@/lib/auth/helpers'
 import { GrantFreepassDialog } from './grant-freepass-dialog'
 import { ChevronLeft, Gift } from 'lucide-react'
 
 export const metadata = { title: 'User Detail — Admin', robots: 'noindex, nofollow' }
 
-function fmtDate(d: string | null | undefined) {
+function fmtDate(d: Date | null | undefined) {
   if (!d) return '—'
-  return new Date(d).toLocaleDateString('en-US', { dateStyle: 'medium' })
+  return d.toLocaleDateString('en-US', { dateStyle: 'medium' })
 }
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
@@ -25,33 +25,10 @@ function Badge({ label, color }: { label: string; color: string }) {
   return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${color}`}>{label}</span>
 }
 
-interface ProfileRow {
-  id:              string
-  email:           string
-  full_name:       string | null
-  timezone:        string
-  plan:            string
-  plan_expires_at: string | null
-  is_admin:        boolean
-  onboarded:       boolean
-  created_at:      string
-}
-
-interface SubRow {
-  id:                   string
-  status:               string
-  plan_id:              string
-  trial_ends_at:        string | null
-  current_period_start: string | null
-  current_period_end:   string | null
-  created_at:           string
-}
-
 export default async function AdminUserDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
 
-  const supabase = await createClient()
-  const { data: { user: currentUser } } = await supabase.auth.getUser()
+  const currentUser = await getAuthUser()
   if (!currentUser) redirect('/login')
 
   const adminEmails = (process.env.ADMIN_EMAILS ?? '')
@@ -60,36 +37,32 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
     .filter(Boolean)
   if (!adminEmails.includes(currentUser.email?.toLowerCase() ?? '')) redirect('/dashboard')
 
-  const db  = createAdminClient()
   const now = new Date()
 
-  const [profileRes, subRes, wsCountRes, projectCountRes, authRes] = await Promise.all([
-    db.from('profiles')
-      .select('id, email, full_name, timezone, plan, plan_expires_at, is_admin, onboarded, created_at')
-      .eq('id', id)
-      .single(),
-    db.from('subscriptions')
-      .select('id, status, plan_id, trial_ends_at, current_period_start, current_period_end, created_at')
-      .eq('user_id', id)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    db.from('workspaces').select('id', { count: 'exact', head: true }).eq('owner_id', id),
-    db.from('projects').select('id', { count: 'exact', head: true }).eq('created_by', id),
-    db.auth.admin.getUserById(id),
-  ])
-
-  const profile      = profileRes.data as ProfileRow | null
-  const sub          = subRes.data as SubRow | null
-  const wsCount      = wsCountRes.count ?? 0
-  const projectCount = projectCountRes.count ?? 0
-  const authUser     = authRes.data?.user
+  const profile = await prisma.profile.findUnique({
+    where: { id },
+    select: {
+      id: true, userId: true, email: true, fullName: true, timezone: true, plan: true,
+      planExpiresAt: true, isAdmin: true, onboarded: true, createdAt: true,
+      user: { select: { bannedUntil: true } },
+    },
+  })
 
   if (!profile) notFound()
 
-  const isBanned   = !!(authUser?.banned_until && new Date(authUser.banned_until) > now)
-  const hasFreepass = profile.plan !== 'free' && profile.plan_expires_at !== null
-  const isTrialing  = sub?.status === 'trialing' && sub.trial_ends_at && new Date(sub.trial_ends_at) > now
+  const [sub, wsCount, projectCount] = await Promise.all([
+    prisma.subscription.findFirst({
+      where: { userId: profile.userId },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, status: true, planId: true, trialEndsAt: true, currentPeriodStart: true, currentPeriodEnd: true, createdAt: true },
+    }),
+    prisma.workspace.count({ where: { ownerId: profile.id } }),
+    prisma.project.count({ where: { createdById: profile.id } }),
+  ])
+
+  const isBanned   = !!(profile.user.bannedUntil && profile.user.bannedUntil > now)
+  const hasFreepass = profile.plan !== 'free' && profile.planExpiresAt !== null
+  const isTrialing  = sub?.status === 'trialing' && sub.trialEndsAt && sub.trialEndsAt > now
 
   const planStatus = sub?.status === 'active'
     ? profile.plan
@@ -111,8 +84,8 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
           <ChevronLeft className="h-5 w-5" />
         </Link>
         <div>
-          <h1 className="text-2xl font-bold text-white">{profile.full_name ?? profile.email}</h1>
-          <p className="text-sm text-gray-400">{profile.full_name ? profile.email : ''}</p>
+          <h1 className="text-2xl font-bold text-white">{profile.fullName ?? profile.email}</h1>
+          <p className="text-sm text-gray-400">{profile.fullName ? profile.email : ''}</p>
         </div>
       </div>
 
@@ -138,7 +111,7 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
           <InfoRow label="ID" value={<code className="text-xs text-gray-400">{profile.id}</code>} />
           <InfoRow label="Timezone" value={profile.timezone} />
           <InfoRow label="Onboarded" value={profile.onboarded ? 'Yes' : 'No'} />
-          <InfoRow label="Admin" value={profile.is_admin ? 'Yes' : 'No'} />
+          <InfoRow label="Admin" value={profile.isAdmin ? 'Yes' : 'No'} />
           <InfoRow
             label="Auth status"
             value={
@@ -148,7 +121,7 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
               />
             }
           />
-          <InfoRow label="Joined" value={fmtDate(profile.created_at)} />
+          <InfoRow label="Joined" value={fmtDate(profile.createdAt)} />
         </div>
 
         {/* Subscription */}
@@ -156,7 +129,7 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
           <h2 className="mb-4 text-sm font-semibold text-white">Subscription</h2>
           {sub ? (
             <>
-              <InfoRow label="Plan" value={sub.plan_id} />
+              <InfoRow label="Plan" value={sub.planId} />
               <InfoRow
                 label="Status"
                 value={
@@ -170,8 +143,8 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
                   />
                 }
               />
-              <InfoRow label="Trial ends"  value={fmtDate(sub.trial_ends_at)} />
-              <InfoRow label="Period end"  value={fmtDate(sub.current_period_end)} />
+              <InfoRow label="Trial ends"  value={fmtDate(sub.trialEndsAt)} />
+              <InfoRow label="Period end"  value={fmtDate(sub.currentPeriodEnd)} />
             </>
           ) : (
             <p className="text-sm text-gray-500">No subscription</p>
@@ -189,16 +162,16 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
             </h2>
             <p className="mt-1 text-xs text-gray-400">
               {hasFreepass
-                ? `Active · ${profile.plan} plan${profile.plan_expires_at ? ` until ${fmtDate(profile.plan_expires_at)}` : ' (permanent)'}`
+                ? `Active · ${profile.plan} plan${profile.planExpiresAt ? ` until ${fmtDate(profile.planExpiresAt)}` : ' (permanent)'}`
                 : 'No active free pass'}
             </p>
           </div>
           <GrantFreepassDialog
             userId={profile.id}
             subscriptionId={sub?.id ?? null}
-            trialEndsAt={sub?.trial_ends_at ?? null}
+            trialEndsAt={sub?.trialEndsAt ? sub.trialEndsAt.toISOString() : null}
             currentPlan={profile.plan}
-            currentPlanExpiresAt={profile.plan_expires_at ?? null}
+            currentPlanExpiresAt={profile.planExpiresAt ? profile.planExpiresAt.toISOString() : null}
           />
         </div>
       </div>

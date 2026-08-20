@@ -2,7 +2,8 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { ExternalLink, CheckCircle2, Zap, Settings2 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getCurrentUser } from '@/lib/auth/helpers';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { UpgradePrompt } from '@/components/shared/UpgradePrompt';
 import { getEffectivePlan } from '@/lib/plan-gates';
@@ -32,22 +33,19 @@ const INTEGRATIONS = [
 ];
 
 export default async function IntegrationsPage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  const [profileRes, intSettingsRes] = await Promise.all([
-    supabase.from('profiles').select('plan, plan_expires_at').eq('id', user.id).single(),
-    supabase.from('integration_settings')
-      .select('integration_type, enabled')
-      .in('integration_type', ['billcraft', 'supportcraft']),
-  ]);
+  const userPlan = getEffectivePlan(currentUser.profile.plan as Plan, currentUser.profile.planExpiresAt?.toISOString() ?? null);
 
-  const userPlan = getEffectivePlan((profileRes.data?.plan ?? 'free') as Plan, profileRes.data?.plan_expires_at ?? null);
+  const intSettings = await prisma.integrationSetting.findMany({
+    where: { workspaceId: currentUser.workspace.id, integrationType: { in: ['billcraft', 'supportcraft'] } },
+    select: { integrationType: true, enabled: true },
+  });
 
   const connectedMap: Record<string, boolean> = {};
-  for (const s of intSettingsRes.data ?? []) {
-    connectedMap[s.integration_type] = s.enabled;
+  for (const s of intSettings) {
+    connectedMap[s.integrationType] = s.enabled;
   }
 
   return (

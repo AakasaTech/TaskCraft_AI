@@ -1,11 +1,11 @@
-import { createAdminClient } from '@/lib/supabase/admin';
+import { prisma } from '@/lib/prisma';
 import { runDueNotifications } from '@/lib/notifications';
 
 export const runtime = 'nodejs';
 
 /**
  * POST /api/notifications/trigger/due-check
- * Intended to be called by a Vercel Cron job or Supabase Edge Function on a schedule.
+ * Intended to be called by a Vercel Cron job on a schedule.
  * Requires the CRON_SECRET header for authorization.
  *
  * Vercel cron.json example:
@@ -17,17 +17,12 @@ export async function POST(req: Request) {
     return Response.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const admin = createAdminClient();
-
-  // Process all workspaces
-  const { data: workspaces } = await admin
-    .from('workspaces')
-    .select('id');
+  const workspaces = await prisma.workspace.findMany({ select: { id: true } });
 
   let totalDueSoon = 0;
   let totalOverdue = 0;
 
-  for (const ws of (workspaces ?? [])) {
+  for (const ws of workspaces) {
     const result = await runDueNotifications(ws.id);
     totalDueSoon += result.dueSoonCount;
     totalOverdue += result.overdueCount;
@@ -35,7 +30,7 @@ export async function POST(req: Request) {
 
   return Response.json({
     ok: true,
-    workspaces_processed: (workspaces ?? []).length,
+    workspaces_processed: workspaces.length,
     due_soon_notified:    totalDueSoon,
     overdue_notified:     totalOverdue,
   });

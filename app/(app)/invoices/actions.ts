@@ -1,39 +1,25 @@
 'use server';
 
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
+import { prisma } from '@/lib/prisma';
 import { BillCraftService, type CreateInvoicePayload, type InvoiceLineItem } from '@/lib/billcraft';
 import type { TimeEntryWithRelations } from '@/lib/types';
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-async function getContext() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
-
-  const { data: member } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', user.id)
-    .limit(1)
-    .single();
-
-  return { supabase, user, workspaceId: member?.workspace_id ?? null };
-}
-
-// ── Fetch BillCraft clients (called from wizard step 1) ───────────────────────
-
 export async function getBillCraftClients() {
-  const { supabase, workspaceId } = await getContext();
-  if (!workspaceId) return { error: 'No workspace found' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const { data: settings } = await supabase
-    .from('integration_settings')
-    .select('config, enabled')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'billcraft')
-    .single();
+  const workspaceId = currentUser.workspace.id;
+
+  const settings = await prisma.integrationSetting.findUnique({
+    where: {
+      workspaceId_integrationType: {
+        workspaceId,
+        integrationType: 'billcraft',
+      },
+    },
+  });
 
   if (!settings?.enabled) return { error: 'BillCraft is not connected. Configure it in Integrations → BillCraft.' };
 
@@ -48,39 +34,61 @@ export async function getBillCraftClients() {
   }
 }
 
-// ── Fetch unbilled time entries for review (step 3) ───────────────────────────
-
 export async function fetchUnbilledEntries(params: {
   projectId?: string | null;
   dateFrom:   string;
   dateTo:     string;
 }) {
-  const { supabase, workspaceId } = await getContext();
-  if (!workspaceId) return { error: 'No workspace found' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  let query = supabase
-    .from('time_entries')
-    .select(`
-      *,
-      task:tasks(id, title),
-      project:projects(id, name, color)
-    `)
-    .eq('workspace_id', workspaceId)
-    .eq('billable', true)
-    .eq('invoice_status', 'not_invoiced')
-    .not('end_time', 'is', null)
-    .gte('start_time', `${params.dateFrom}T00:00:00.000Z`)
-    .lte('start_time', `${params.dateTo}T23:59:59.999Z`)
-    .order('start_time', { ascending: false });
+  const workspaceId = currentUser.workspace.id;
+
+  const where: any = {
+    workspaceId,
+    billable: true,
+    invoiceStatus: 'not_invoiced',
+    endTime: { not: null },
+    startTime: {
+      gte: new Date(`${params.dateFrom}T00:00:00.000Z`),
+      lte: new Date(`${params.dateTo}T23:59:59.999Z`),
+    },
+  };
 
   if (params.projectId) {
-    query = query.eq('project_id', params.projectId);
+    where.projectId = params.projectId;
   }
 
-  const { data, error } = await query;
-  if (error) return { error: error.message };
+  const rows = await prisma.timeEntry.findMany({
+    where,
+    include: {
+      task: { select: { id: true, title: true } },
+      project: { select: { id: true, name: true, color: true } },
+    },
+    orderBy: { startTime: 'desc' },
+  });
 
-  const entries = (data ?? []) as TimeEntryWithRelations[];
+  const entries = rows.map((e) => ({
+    id:               e.id,
+    workspace_id:     e.workspaceId,
+    task_id:          e.taskId,
+    project_id:       e.projectId,
+    user_id:          e.userId,
+    description:      e.description,
+    start_time:       e.startTime.toISOString(),
+    end_time:         e.endTime?.toISOString() ?? null,
+    duration_minutes: e.durationMinutes,
+    billable:         e.billable,
+    hourly_rate:      e.hourlyRate ? Number(e.hourlyRate) : null,
+    invoice_status:   e.invoiceStatus as any,
+    invoice_sync_id:  null,
+    source:           e.source as any,
+    created_at:       e.createdAt.toISOString(),
+    updated_at:       e.updatedAt.toISOString(),
+    task:             e.task ? { id: e.task.id, title: e.task.title } : null,
+    project:          e.project ? { id: e.project.id, name: e.project.name, color: e.project.color } : null,
+  }));
+
   const totalMinutes = entries.reduce((s, e) => s + (e.duration_minutes ?? 0), 0);
   const totalHours   = totalMinutes / 60;
   const totalAmount  = entries.reduce((s, e) => {
@@ -91,8 +99,6 @@ export async function fetchUnbilledEntries(params: {
 
   return { data: { entries, totalHours, totalAmount } };
 }
-
-// ── Create invoice ────────────────────────────────────────────────────────────
 
 export type InvoiceGrouping = 'by_task' | 'flat';
 
@@ -112,35 +118,60 @@ export interface CreateInvoiceInput {
 }
 
 export async function createInvoice(input: CreateInvoiceInput) {
-  const { supabase, user, workspaceId } = await getContext();
-  if (!workspaceId) return { error: 'No workspace found' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
+
+  const workspaceId = currentUser.workspace.id;
+  const uid = currentUser.profile.id;
 
   // 1. Load selected time entries
-  const { data: rows, error: entErr } = await supabase
-    .from('time_entries')
-    .select(`
-      *,
-      task:tasks(id, title)
-    `)
-    .in('id', input.entry_ids)
-    .eq('workspace_id', workspaceId)
-    .eq('invoice_status', 'not_invoiced');
+  const rows = await prisma.timeEntry.findMany({
+    where: {
+      id: { in: input.entry_ids },
+      workspaceId,
+      invoiceStatus: 'not_invoiced',
+    },
+    include: {
+      task: { select: { id: true, title: true } },
+    },
+  });
 
-  if (entErr) return { error: entErr.message };
-  if (!rows || rows.length === 0) return { error: 'No eligible entries found' };
+  if (rows.length === 0) return { error: 'No eligible entries found' };
+
+  const mappedEntries: TimeEntryWithRelations[] = rows.map((e) => ({
+    id:               e.id,
+    workspace_id:     e.workspaceId,
+    task_id:          e.taskId,
+    project_id:       e.projectId,
+    user_id:          e.userId,
+    description:      e.description,
+    start_time:       e.startTime.toISOString(),
+    end_time:         e.endTime?.toISOString() ?? null,
+    duration_minutes: e.durationMinutes,
+    billable:         e.billable,
+    hourly_rate:      e.hourlyRate ? Number(e.hourlyRate) : null,
+    invoice_status:   e.invoiceStatus as any,
+    invoice_sync_id:  null,
+    source:           e.source as any,
+    created_at:       e.createdAt.toISOString(),
+    updated_at:       e.updatedAt.toISOString(),
+    task:             e.task ? { id: e.task.id, title: e.task.title } : null,
+  }));
 
   // 2. Build line items according to grouping
-  const lineItems = buildLineItems(rows as TimeEntryWithRelations[], input.grouping, input.default_rate);
-  const totalHours  = rows.reduce((s, e) => s + (e.duration_minutes ?? 0) / 60, 0);
+  const lineItems = buildLineItems(mappedEntries, input.grouping, input.default_rate);
+  const totalHours  = rows.reduce((s, e) => s + (e.durationMinutes ?? 0) / 60, 0);
   const totalAmount = lineItems.reduce((s, li) => s + li.amount, 0);
 
   // 3. Call BillCraft API
-  const { data: settings } = await supabase
-    .from('integration_settings')
-    .select('config, enabled')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'billcraft')
-    .single();
+  const settings = await prisma.integrationSetting.findUnique({
+    where: {
+      workspaceId_integrationType: {
+        workspaceId,
+        integrationType: 'billcraft',
+      },
+    },
+  });
 
   if (!settings?.enabled) return { error: 'BillCraft is not connected' };
 
@@ -171,35 +202,29 @@ export async function createInvoice(input: CreateInvoiceInput) {
     return { error: err instanceof Error ? err.message : 'BillCraft API error' };
   }
 
-  // 4. Save to invoices_sync
-  const { data: syncRecord, error: syncErr } = await supabase
-    .from('invoices_sync')
-    .insert({
-      workspace_id:         workspaceId,
-      project_id:           input.project_id,
-      user_id:              user.id,
-      billcraft_invoice_id: bcInvoice.id,
-      invoice_number:       bcInvoice.number,
-      date_from:            input.date_from,
-      date_to:              input.date_to,
-      entry_count:          rows.length,
-      notes:                input.notes || null,
-      total_hours:          Math.round(totalHours * 100) / 100,
-      total_amount:         Math.round(totalAmount * 100) / 100,
-      currency:             input.currency,
-      status:               'synced',
-      synced_at:            new Date().toISOString(),
-    })
-    .select()
-    .single();
+  // 4. Save to invoicesSync and mark entries as invoiced in Prisma transaction
+  const syncRecord = await prisma.$transaction(async (tx) => {
+    const sync = await tx.invoicesSync.create({
+      data: {
+        workspaceId,
+        projectId:           input.project_id,
+        userId:              uid,
+        billcraftInvoiceId:  bcInvoice.id,
+        totalHours,
+        totalAmount,
+        currency:            input.currency,
+        status:              'synced',
+        syncedAt:            new Date(),
+      },
+    });
 
-  if (syncErr) return { error: syncErr.message };
+    await tx.timeEntry.updateMany({
+      where: { id: { in: input.entry_ids } },
+      data: { invoiceStatus: 'invoiced' },
+    });
 
-  // 5. Mark time entries as invoiced
-  await supabase
-    .from('time_entries')
-    .update({ invoice_status: 'invoiced', invoice_sync_id: syncRecord.id })
-    .in('id', input.entry_ids);
+    return sync;
+  });
 
   return { data: { sync: syncRecord, invoice: bcInvoice } };
 }

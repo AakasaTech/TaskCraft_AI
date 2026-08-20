@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { ArrowLeft, CheckCircle, Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { createClient } from '@/lib/supabase/client';
+import { requestPasswordReset } from './actions';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
@@ -16,12 +16,9 @@ export default function ForgotPasswordPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
-    const supabase = createClient();
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?type=recovery`,
-    });
-    if (error) {
-      toast.error(error.message);
+    const res = await requestPasswordReset(email);
+    if (res?.error) {
+      toast.error(res.error);
     } else {
       setSent(true);
     }
@@ -36,8 +33,7 @@ export default function ForgotPasswordPage() {
         </div>
         <h1 className="text-xl font-bold">Check your email</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          We sent a reset link to{' '}
-          <strong className="text-foreground">{email}</strong>.
+          If an account exists for <strong className="text-foreground">{email}</strong>, we sent a password reset link.
         </p>
         <p className="mt-4 text-xs text-muted-foreground">
           Didn&apos;t get it? Check your spam folder or{' '}

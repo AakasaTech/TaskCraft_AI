@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/lib/supabase/admin';
+import { prisma } from '@/lib/prisma';
 import { authenticateApiKey, hasScope } from '@/lib/api-auth';
 import { apiSuccess, apiError } from '@/lib/api-response';
 import { sendTestWebhook } from '@/lib/webhooks';
@@ -15,12 +15,10 @@ export async function POST(
   if (!ctx) return apiError('UNAUTHORIZED', 'Invalid or missing API key.', 401);
   if (!hasScope(ctx, 'admin')) return apiError('FORBIDDEN', 'Admin scope required.', 403);
 
-  const { data: webhook } = await createAdminClient()
-    .from('webhooks')
-    .select('url, secret, events')
-    .eq('id', id)
-    .eq('workspace_id', ctx.workspaceId)
-    .maybeSingle();
+  const webhook = await prisma.webhook.findFirst({
+    where: { id, workspaceId: ctx.workspaceId },
+    select: { url: true, secret: true, events: true },
+  });
 
   if (!webhook) return apiError('NOT_FOUND', 'Webhook not found.', 404);
 

@@ -1,7 +1,9 @@
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/server'
+import { getAuthUser } from '@/lib/auth/helpers'
 import { LayoutDashboard, Users, Gift } from 'lucide-react'
+
+export const dynamic = 'force-dynamic'
 
 const navItems = [
   { href: '/admin',          label: 'Dashboard', icon: LayoutDashboard },
@@ -10,8 +12,7 @@ const navItems = [
 ]
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getAuthUser()
   if (!user) redirect('/login')
 
   const adminEmails = (process.env.ADMIN_EMAILS ?? '')

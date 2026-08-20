@@ -1,83 +1,90 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
-import { createAdminClient } from '@/lib/supabase/admin';
+import { getCurrentUser } from '@/lib/auth/helpers';
+import { prisma } from '@/lib/prisma';
 import { generateRawKey } from '@/lib/api-auth';
 import { randomBytes } from 'node:crypto';
 import type { ApiScope, WebhookEventType } from '@/lib/types';
 
-async function getMemberAndWorkspace() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
-
-  const { data: member } = await supabase
-    .from('workspace_members')
-    .select('workspace_id, role')
-    .eq('user_id', user.id)
-    .maybeSingle();
-
-  if (!member || !['owner', 'admin'].includes(member.role)) return null;
-  return { userId: user.id, workspaceId: member.workspace_id };
-}
-
 // ── API Keys ──────────────────────────────────────────────────────────────────
 
 export async function createApiKey(name: string, scopes: ApiScope[]) {
-  const ctx = await getMemberAndWorkspace();
-  if (!ctx) return { error: 'Unauthorized or insufficient permissions.' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized.' };
 
-  if (!name.trim())    return { error: 'Name is required.' };
-  if (!scopes.length)  return { error: 'At least one scope is required.' };
+  if (!['owner', 'admin'].includes(currentUser.membership.role)) {
+    return { error: 'Insufficient permissions.' };
+  }
+
+  if (!name.trim())   return { error: 'Name is required.' };
+  if (!scopes.length) return { error: 'At least one scope is required.' };
 
   const { key, hash, prefix } = generateRawKey();
-  const admin = createAdminClient();
+  const workspaceId = currentUser.workspace.id;
+  const uid = currentUser.profile.id;
 
-  const { data, error } = await admin
-    .from('api_keys')
-    .insert({
-      workspace_id: ctx.workspaceId,
-      user_id:      ctx.userId,
-      name:         name.trim(),
-      key_hash:     hash,
-      key_prefix:   prefix,
-      scopes,
-    })
-    .select('id, name, key_prefix, scopes, created_at')
-    .single();
+  try {
+    const apiKey = await prisma.apiKey.create({
+      data: {
+        workspaceId,
+        userId:    uid,
+        name:      name.trim(),
+        keyHash:   hash,
+        keyPrefix: prefix,
+        scopes,
+      },
+      select: {
+        id:        true,
+        name:      true,
+        keyPrefix: true,
+        scopes:    true,
+        createdAt: true,
+      },
+    });
 
-  if (error) return { error: error.message };
-
-  revalidatePath('/settings/api');
-  return { data: { ...data, key } }; // key returned ONCE
+    revalidatePath('/settings/api');
+    return {
+      data: {
+        id:         apiKey.id,
+        name:       apiKey.name,
+        key_prefix: apiKey.keyPrefix,
+        scopes:     apiKey.scopes,
+        created_at: apiKey.createdAt.toISOString(),
+        key,
+      },
+    };
+  } catch (err) {
+    console.error('Error creating API key:', err);
+    return { error: 'Failed to create API key.' };
+  }
 }
 
 export async function revokeApiKey(keyId: string) {
-  const ctx = await getMemberAndWorkspace();
-  if (!ctx) return { error: 'Unauthorized.' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized.' };
 
-  const admin = createAdminClient();
-
-  const { data: existing } = await admin
-    .from('api_keys')
-    .select('workspace_id')
-    .eq('id', keyId)
-    .maybeSingle();
-
-  if (!existing || existing.workspace_id !== ctx.workspaceId) {
-    return { error: 'API key not found.' };
+  if (!['owner', 'admin'].includes(currentUser.membership.role)) {
+    return { error: 'Insufficient permissions.' };
   }
 
-  const { error } = await admin
-    .from('api_keys')
-    .update({ revoked_at: new Date().toISOString() })
-    .eq('id', keyId);
+  try {
+    await prisma.apiKey.updateMany({
+      where: {
+        id:          keyId,
+        workspaceId: currentUser.workspace.id,
+      },
+      data: {
+        revokedAt: new Date(),
+      },
+    });
 
-  if (error) return { error: error.message };
-
-  revalidatePath('/settings/api');
-  return { success: true };
+    revalidatePath('/settings/api');
+    return { success: true };
+  } catch (err) {
+    console.error('Error revoking API key:', err);
+    return { error: 'Failed to revoke API key.' };
+  }
 }
 
 // ── Webhooks ──────────────────────────────────────────────────────────────────
@@ -93,11 +100,15 @@ export async function createWebhook(params: {
   url:    string;
   events: WebhookEventType[];
 }) {
-  const ctx = await getMemberAndWorkspace();
-  if (!ctx) return { error: 'Unauthorized.' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized.' };
 
-  if (!params.url.trim())     return { error: 'URL is required.' };
-  if (!params.events.length)  return { error: 'Select at least one event.' };
+  if (!['owner', 'admin'].includes(currentUser.membership.role)) {
+    return { error: 'Insufficient permissions.' };
+  }
+
+  if (!params.url.trim())    return { error: 'URL is required.' };
+  if (!params.events.length) return { error: 'Select at least one event.' };
 
   try { new URL(params.url); } catch { return { error: 'URL must be a valid HTTPS URL.' }; }
 
@@ -105,69 +116,92 @@ export async function createWebhook(params: {
   if (invalid.length) return { error: `Invalid event types: ${invalid.join(', ')}` };
 
   const secret = randomBytes(24).toString('hex');
-  const admin  = createAdminClient();
+  const workspaceId = currentUser.workspace.id;
+  const uid = currentUser.profile.id;
 
-  const { data, error } = await admin
-    .from('webhooks')
-    .insert({
-      workspace_id: ctx.workspaceId,
-      user_id:      ctx.userId,
-      name:         params.name.trim() || params.url,
-      url:          params.url.trim(),
-      secret,
-      events:       params.events,
-    })
-    .select('id, name, url, events, active, created_at')
-    .single();
+  try {
+    const webhook = await prisma.webhook.create({
+      data: {
+        workspaceId,
+        userId: uid,
+        name:   params.name.trim() || params.url,
+        url:    params.url.trim(),
+        secret,
+        events: params.events,
+      },
+      select: {
+        id:        true,
+        name:      true,
+        url:       true,
+        events:    true,
+        active:    true,
+        createdAt: true,
+      },
+    });
 
-  if (error) return { error: error.message };
-
-  revalidatePath('/settings/api');
-  return { data: { ...data, secret } }; // secret returned ONCE
+    revalidatePath('/settings/api');
+    return {
+      data: {
+        id:         webhook.id,
+        name:       webhook.name,
+        url:        webhook.url,
+        events:     webhook.events,
+        active:     webhook.active,
+        created_at: webhook.createdAt.toISOString(),
+        secret,
+      },
+    };
+  } catch (err) {
+    console.error('Error creating webhook:', err);
+    return { error: 'Failed to create webhook.' };
+  }
 }
 
 export async function deleteWebhook(webhookId: string) {
-  const ctx = await getMemberAndWorkspace();
-  if (!ctx) return { error: 'Unauthorized.' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized.' };
 
-  const admin = createAdminClient();
-
-  const { data: existing } = await admin
-    .from('webhooks')
-    .select('workspace_id')
-    .eq('id', webhookId)
-    .maybeSingle();
-
-  if (!existing || existing.workspace_id !== ctx.workspaceId) {
-    return { error: 'Webhook not found.' };
+  if (!['owner', 'admin'].includes(currentUser.membership.role)) {
+    return { error: 'Insufficient permissions.' };
   }
 
-  const { error } = await admin.from('webhooks').delete().eq('id', webhookId);
-  if (error) return { error: error.message };
+  try {
+    await prisma.webhook.deleteMany({
+      where: {
+        id:          webhookId,
+        workspaceId: currentUser.workspace.id,
+      },
+    });
 
-  revalidatePath('/settings/api');
-  return { success: true };
+    revalidatePath('/settings/api');
+    return { success: true };
+  } catch (err) {
+    console.error('Error deleting webhook:', err);
+    return { error: 'Failed to delete webhook.' };
+  }
 }
 
 export async function toggleWebhook(webhookId: string, active: boolean) {
-  const ctx = await getMemberAndWorkspace();
-  if (!ctx) return { error: 'Unauthorized.' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized.' };
 
-  const admin = createAdminClient();
-
-  const { data: existing } = await admin
-    .from('webhooks')
-    .select('workspace_id')
-    .eq('id', webhookId)
-    .maybeSingle();
-
-  if (!existing || existing.workspace_id !== ctx.workspaceId) {
-    return { error: 'Webhook not found.' };
+  if (!['owner', 'admin'].includes(currentUser.membership.role)) {
+    return { error: 'Insufficient permissions.' };
   }
 
-  const { error } = await admin.from('webhooks').update({ active }).eq('id', webhookId);
-  if (error) return { error: error.message };
+  try {
+    await prisma.webhook.updateMany({
+      where: {
+        id:          webhookId,
+        workspaceId: currentUser.workspace.id,
+      },
+      data: { active },
+    });
 
-  revalidatePath('/settings/api');
-  return { success: true };
+    revalidatePath('/settings/api');
+    return { success: true };
+  } catch (err) {
+    console.error('Error toggling webhook:', err);
+    return { error: 'Failed to update webhook.' };
+  }
 }

@@ -4,7 +4,8 @@ import {
   CheckSquare, Clock, FolderKanban, TrendingUp, AlertTriangle,
   Calendar, ArrowRight, Play, Users, Activity,
 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
+import { prisma } from '@/lib/prisma';
 import { StatCard } from '@/components/shared/StatCard';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { TimerWidget } from '@/components/shared/TimerWidget';
@@ -61,38 +62,26 @@ const ACTION_LABEL: Record<string, string> = {
 // ── Data fetching ────────────────────────────────────────────────────────────
 
 async function fetchDashboardData() {
-  const supabase = await createClient();
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return null;
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
-
-  // Workspace (first membership, ordered by join date)
-  const { data: membership } = await supabase
-    .from('workspace_members')
-    .select('workspace_id, workspaces(name)')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (!membership) return { empty: true as const, user };
-
-  const wid = membership.workspace_id;
-  const uid = user.id;
+  const wid = currentUser.workspace.id;
+  const uid = currentUser.profile.id;
 
   const now        = new Date();
   const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
   const todayEnd   = new Date(now); todayEnd.setHours(23, 59, 59, 999);
   const monday     = getMonday(now);
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const next7Days  = new Date(now.getTime() + 7 * 86_400_000);
 
-  // Run independent queries in parallel
+  // Run independent queries in parallel via Prisma
   const [
-    openCount,
-    overdueCount,
-    todayCount,
-    weekTime,
-    monthBillable,
+    openTasksCount,
+    overdueTasksCount,
+    todayTasksCount,
+    weekTimeEntries,
+    monthBillableEntries,
     activeProjectsCount,
     myTasksRaw,
     projectsRaw,
@@ -102,158 +91,159 @@ async function fetchDashboardData() {
     runningTimer,
   ] = await Promise.all([
     // Open tasks (not done)
-    supabase
-      .from('tasks')
-      .select('*', { count: 'exact', head: true })
-      .eq('workspace_id', wid)
-      .neq('status', 'done'),
+    prisma.task.count({
+      where: { workspaceId: wid, status: { not: 'done' } },
+    }),
 
-    // Overdue (past due, not done)
-    supabase
-      .from('tasks')
-      .select('*', { count: 'exact', head: true })
-      .eq('workspace_id', wid)
-      .neq('status', 'done')
-      .lt('due_date', todayStart.toISOString())
-      .not('due_date', 'is', null),
+    // Overdue
+    prisma.task.count({
+      where: {
+        workspaceId: wid,
+        status: { not: 'done' },
+        dueDate: { lt: todayStart },
+      },
+    }),
 
-    // Due today (not done)
-    supabase
-      .from('tasks')
-      .select('*', { count: 'exact', head: true })
-      .eq('workspace_id', wid)
-      .neq('status', 'done')
-      .gte('due_date', todayStart.toISOString())
-      .lte('due_date', todayEnd.toISOString()),
+    // Due today
+    prisma.task.count({
+      where: {
+        workspaceId: wid,
+        status: { not: 'done' },
+        dueDate: { gte: todayStart, lte: todayEnd },
+      },
+    }),
 
     // Time entries this week
-    supabase
-      .from('time_entries')
-      .select('duration_minutes, billable')
-      .eq('workspace_id', wid)
-      .eq('user_id', uid)
-      .gte('start_time', monday.toISOString())
-      .not('duration_minutes', 'is', null),
+    prisma.timeEntry.findMany({
+      where: {
+        workspaceId: wid,
+        userId: uid,
+        startTime: { gte: monday },
+        durationMinutes: { not: null },
+      },
+      select: { durationMinutes: true, billable: true },
+    }),
 
     // Billable time this month
-    supabase
-      .from('time_entries')
-      .select('duration_minutes')
-      .eq('workspace_id', wid)
-      .eq('user_id', uid)
-      .eq('billable', true)
-      .gte('start_time', monthStart.toISOString())
-      .not('duration_minutes', 'is', null),
+    prisma.timeEntry.findMany({
+      where: {
+        workspaceId: wid,
+        userId: uid,
+        billable: true,
+        startTime: { gte: monthStart },
+        durationMinutes: { not: null },
+      },
+      select: { durationMinutes: true },
+    }),
 
     // Active projects count
-    supabase
-      .from('projects')
-      .select('*', { count: 'exact', head: true })
-      .eq('workspace_id', wid)
-      .eq('status', 'active'),
+    prisma.project.count({
+      where: { workspaceId: wid, status: 'active' },
+    }),
 
-    // My open tasks (assigned to me)
-    supabase
-      .from('tasks')
-      .select('id, title, status, priority, due_date, projects(name, color)')
-      .eq('workspace_id', wid)
-      .eq('assignee_id', uid)
-      .neq('status', 'done')
-      .order('priority', { ascending: false })
-      .order('due_date', { ascending: true, nullsFirst: false })
-      .limit(12),
+    // My open tasks
+    prisma.task.findMany({
+      where: {
+        workspaceId: wid,
+        assigneeId: uid,
+        status: { not: 'done' },
+      },
+      include: {
+        project: { select: { name: true, color: true } },
+      },
+      orderBy: [
+        { dueDate: 'asc' },
+      ],
+      take: 12,
+    }),
 
-    // Active projects
-    supabase
-      .from('projects')
-      .select('id, name, color, status, due_date')
-      .eq('workspace_id', wid)
-      .eq('status', 'active')
-      .order('created_at', { ascending: false })
-      .limit(5),
+    // Active projects with task stats
+    prisma.project.findMany({
+      where: { workspaceId: wid, status: 'active' },
+      include: {
+        tasks: { select: { status: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    }),
 
     // Upcoming deadlines (next 7 days)
-    supabase
-      .from('tasks')
-      .select('id, title, due_date, priority, status, projects(name, color)')
-      .eq('workspace_id', wid)
-      .neq('status', 'done')
-      .gte('due_date', todayStart.toISOString())
-      .lte('due_date', new Date(now.getTime() + 7 * 86_400_000).toISOString())
-      .order('due_date', { ascending: true })
-      .limit(8),
+    prisma.task.findMany({
+      where: {
+        workspaceId: wid,
+        status: { not: 'done' },
+        dueDate: { gte: todayStart, lte: next7Days },
+      },
+      include: {
+        project: { select: { name: true, color: true } },
+      },
+      orderBy: { dueDate: 'asc' },
+      take: 8,
+    }),
 
     // Recent activity
-    supabase
-      .from('task_activity')
-      .select('id, action, created_at, tasks!inner(id, title, workspace_id), profiles(full_name, avatar_url)')
-      .eq('tasks.workspace_id', wid)
-      .order('created_at', { ascending: false })
-      .limit(10),
+    prisma.taskActivity.findMany({
+      where: {
+        task: { workspaceId: wid },
+      },
+      include: {
+        task: { select: { id: true, title: true } },
+        user: { select: { fullName: true, avatarUrl: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    }),
 
     // Tasks completed this week
-    supabase
-      .from('tasks')
-      .select('*', { count: 'exact', head: true })
-      .eq('workspace_id', wid)
-      .eq('status', 'done')
-      .gte('completed_at', monday.toISOString()),
+    prisma.task.count({
+      where: {
+        workspaceId: wid,
+        status: 'done',
+        completedAt: { gte: monday },
+      },
+    }),
 
-    // Running timer (if any)
-    supabase
-      .from('time_entries')
-      .select('id, description, task_id, start_time, tasks(title)')
-      .eq('user_id', uid)
-      .eq('workspace_id', wid)
-      .is('end_time', null)
-      .maybeSingle(),
+    // Running timer
+    prisma.timeEntry.findFirst({
+      where: {
+        workspaceId: wid,
+        userId: uid,
+        endTime: null,
+      },
+      include: {
+        task: { select: { title: true } },
+      },
+    }),
   ]);
 
-  // Compute project task stats
-  const projectIds = (projectsRaw.data ?? []).map((p: { id: string }) => p.id);
-  const projectTaskStats: Record<string, { total: number; done: number }> = {};
-  if (projectIds.length > 0) {
-    const { data: ptRaw } = await supabase
-      .from('tasks')
-      .select('project_id, status')
-      .eq('workspace_id', wid)
-      .in('project_id', projectIds);
-    for (const t of ptRaw ?? []) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rec = t as any;
-      const pid: string = rec.project_id;
-      if (!projectTaskStats[pid]) projectTaskStats[pid] = { total: 0, done: 0 };
-      projectTaskStats[pid].total++;
-      if (rec.status === 'done') projectTaskStats[pid].done++;
-    }
-  }
-
   // Derived stats
-  const weekMins   = (weekTime.data ?? []).reduce((s, e) => s + ((e as { duration_minutes: number }).duration_minutes ?? 0), 0);
-  const monthMins  = (monthBillable.data ?? []).reduce((s, e) => s + ((e as { duration_minutes: number }).duration_minutes ?? 0), 0);
+  const weekMins = weekTimeEntries.reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
+  const monthMins = monthBillableEntries.reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
 
   // Shape my tasks
   const todayISO = todayStart.toISOString();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const myTasks: DashTask[] = (myTasksRaw.data ?? []).map((t: any) => ({
-    id: t.id,
-    title: t.title,
-    status: t.status as TaskStatus,
-    priority: t.priority as TaskPriority,
-    due_date: t.due_date,
-    project_name: Array.isArray(t.projects) ? (t.projects[0]?.name ?? null) : (t.projects?.name ?? null),
-    project_color: Array.isArray(t.projects) ? (t.projects[0]?.color ?? null) : (t.projects?.color ?? null),
-    is_overdue: !!t.due_date && t.due_date < todayISO,
-  }));
+  const myTasks: DashTask[] = myTasksRaw.map((t) => {
+    const dueStr = t.dueDate ? t.dueDate.toISOString().split('T')[0] : null;
+    return {
+      id: t.id,
+      title: t.title,
+      status: t.status as TaskStatus,
+      priority: t.priority as TaskPriority,
+      due_date: dueStr,
+      project_name: t.project?.name ?? null,
+      project_color: t.project?.color ?? null,
+      is_overdue: Boolean(t.dueDate && t.dueDate < todayStart),
+    };
+  });
 
-  const todayTasks  = myTasks.filter((t) => t.due_date && t.due_date >= todayISO && t.due_date <= todayEnd.toISOString());
+  const todayTasks = myTasks.filter((t) => t.due_date && t.due_date >= todayISO.split('T')[0] && t.due_date <= todayEnd.toISOString().split('T')[0]);
   const overdueTasks = myTasks.filter((t) => t.is_overdue);
 
-  // AI focus: top 5 by urgency (urgent/high priority + earliest due)
-  const focusTasks: FocusTask[] = myTasks
+  // AI focus: top 5 by urgency
+  const focusTasks: FocusTask[] = [...myTasks]
     .sort((a, b) => {
-      const pOrder = { urgent: 0, high: 1, medium: 2, low: 3 };
-      return pOrder[a.priority] - pOrder[b.priority];
+      const pOrder: Record<TaskPriority, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+      return (pOrder[a.priority] ?? 2) - (pOrder[b.priority] ?? 2);
     })
     .slice(0, 5)
     .map((t) => ({
@@ -271,53 +261,52 @@ async function fetchDashboardData() {
     }));
 
   // Active projects with stats
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const projects = (projectsRaw.data ?? []).map((p: any) => ({
-    id: p.id,
-    name: p.name,
-    color: p.color,
-    due_date: p.due_date,
-    stats: projectTaskStats[p.id] ?? { total: 0, done: 0 },
-  }));
+  const projects = projectsRaw.map((p) => {
+    const total = p.tasks.length;
+    const done = p.tasks.filter((t) => t.status === 'done').length;
+    return {
+      id: p.id,
+      name: p.name,
+      color: p.color,
+      due_date: p.dueDate ? p.dueDate.toISOString().split('T')[0] : null,
+      stats: { total, done },
+    };
+  });
 
   // Upcoming deadlines
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const upcoming = (upcomingRaw.data ?? []).map((t: any) => ({
+  const upcoming = upcomingRaw.map((t) => ({
     id: t.id,
     title: t.title,
-    due_date: t.due_date,
+    due_date: t.dueDate ? t.dueDate.toISOString().split('T')[0] : null,
     priority: t.priority as TaskPriority,
-    project_name: Array.isArray(t.projects) ? (t.projects[0]?.name ?? null) : (t.projects?.name ?? null),
-    project_color: Array.isArray(t.projects) ? (t.projects[0]?.color ?? null) : (t.projects?.color ?? null),
+    project_name: t.project?.name ?? null,
+    project_color: t.project?.color ?? null,
   }));
 
   // Recent activity
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const activity = (activityRaw.data ?? []).map((a: any) => ({
+  const activity = activityRaw.map((a) => ({
     id: a.id,
     action: a.action,
-    task_title: Array.isArray(a.tasks) ? (a.tasks[0]?.title ?? 'a task') : (a.tasks?.title ?? 'a task'),
-    user_name: Array.isArray(a.profiles) ? (a.profiles[0]?.full_name ?? 'Someone') : (a.profiles?.full_name ?? 'Someone'),
-    avatar_url: Array.isArray(a.profiles) ? (a.profiles[0]?.avatar_url ?? null) : (a.profiles?.avatar_url ?? null),
-    created_at: a.created_at,
+    task_title: a.task?.title ?? 'a task',
+    user_name: a.user?.fullName ?? 'Someone',
+    avatar_url: a.user?.avatarUrl ?? null,
+    created_at: a.createdAt.toISOString(),
   }));
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const runningTimerRec = runningTimer.data as any;
-  const runningTask: string | null = Array.isArray(runningTimerRec?.tasks)
-    ? (runningTimerRec.tasks[0]?.title ?? null)
-    : (runningTimerRec?.tasks?.title ?? null);
-
   return {
-    user,
+    user: {
+      id: currentUser.id,
+      email: currentUser.email,
+      fullName: currentUser.profile.fullName,
+    },
     stats: {
-      openTasks:        openCount.count ?? 0,
-      overdueTasks:     overdueCount.count ?? 0,
-      todayTasks:       todayCount.count ?? 0,
+      openTasks: openTasksCount,
+      overdueTasks: overdueTasksCount,
+      todayTasks: todayTasksCount,
       weekMins,
       monthMins,
-      activeProjects:   activeProjectsCount.count ?? 0,
-      completedWeek:    completedWeekCount.count ?? 0,
+      activeProjects: activeProjectsCount,
+      completedWeek: completedWeekCount,
     },
     myTasks,
     todayTasks,
@@ -326,11 +315,8 @@ async function fetchDashboardData() {
     upcoming,
     activity,
     focusTasks,
-    runningTask,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    workspaceName: Array.isArray((membership as any).workspaces)
-      ? ((membership as any).workspaces[0]?.name ?? 'My Workspace')
-      : ((membership as any).workspaces?.name ?? 'My Workspace'),
+    runningTask: runningTimer?.task?.title ?? null,
+    workspaceName: currentUser.workspace.name,
   };
 }
 
@@ -339,7 +325,7 @@ async function fetchDashboardData() {
 export default async function DashboardPage() {
   const data = await fetchDashboardData();
 
-  if (!data || 'empty' in data) {
+  if (!data) {
     return (
       <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
         <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-muted">
@@ -358,7 +344,7 @@ export default async function DashboardPage() {
   const now = new Date();
   const hour = now.getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-  const firstName = data.user.user_metadata?.full_name?.split(' ')[0] ?? 'there';
+  const firstName = data.user.fullName?.split(' ')[0] || data.user.email.split('@')[0] || 'there';
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -385,14 +371,10 @@ export default async function DashboardPage() {
         <div className="flex items-center gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 dark:border-red-900/50 dark:bg-red-950/20">
           <AlertTriangle className="h-4 w-4 shrink-0 text-red-500" />
           <p className="text-sm text-red-700 dark:text-red-400">
-            <strong>{stats.overdueTasks}</strong> task{stats.overdueTasks > 1 ? 's are' : ' is'} overdue.
-            {' '}
-            <button
-              onClick={() => {}}
-              className="font-semibold underline hover:no-underline"
-            >
+            <strong>{stats.overdueTasks}</strong> task{stats.overdueTasks > 1 ? 's are' : ' is'} overdue.{' '}
+            <Link href="/tasks" className="font-semibold underline hover:no-underline">
               Review now →
-            </button>
+            </Link>
           </p>
         </div>
       )}
@@ -616,7 +598,7 @@ export default async function DashboardPage() {
                     <div className="flex shrink-0 flex-col items-end gap-1">
                       <PriorityBadge priority={t.priority} iconOnly />
                       <span className="text-xs text-muted-foreground">
-                        {formatDueDateShort(t.due_date)}
+                        {formatDueDateShort(t.due_date || '')}
                       </span>
                     </div>
                   </li>
@@ -650,16 +632,15 @@ export default async function DashboardPage() {
           <div className="divide-y divide-border/50">
             {activity.map((a) => (
               <div key={a.id} className="flex items-start gap-3 px-5 py-3">
-                {/* Avatar */}
                 {a.avatar_url ? (
                   <img
                     src={a.avatar_url}
-                    alt={a.user_name ?? ''}
+                    alt={a.user_name}
                     className="mt-0.5 h-7 w-7 shrink-0 rounded-full object-cover"
                   />
                 ) : (
                   <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-                    {(a.user_name ?? 'U')[0].toUpperCase()}
+                    {(a.user_name || 'U')[0].toUpperCase()}
                   </div>
                 )}
                 <div className="min-w-0 flex-1">

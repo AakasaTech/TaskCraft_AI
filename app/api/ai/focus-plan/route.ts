@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import * as https from 'node:https';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getCurrentUser } from '@/lib/auth/helpers';
 
 interface OpenAIMessage { role: 'system' | 'user' | 'assistant'; content: string; }
 
@@ -50,49 +51,35 @@ function callOpenAI(messages: OpenAIMessage[]): Promise<string> {
 
 export async function POST() {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-    // Get workspace
-    const { data: membership } = await supabase
-      .from('workspace_members')
-      .select('workspace_id')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (!membership) {
-      return NextResponse.json({ focus: [], reason: 'No workspace found.' });
-    }
+    const currentUser = await getCurrentUser();
+    if (!currentUser) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const sevenDays = new Date(today.getTime() + 7 * 86_400_000);
 
     // Fetch open tasks
-    const { data: tasks } = await supabase
-      .from('tasks')
-      .select('id, title, priority, due_date, status, projects(name)')
-      .eq('workspace_id', membership.workspace_id)
-      .eq('assignee_id', user.id)
-      .neq('status', 'done')
-      .order('priority', { ascending: false })
-      .limit(20);
+    const tasks = await prisma.task.findMany({
+      where: {
+        workspaceId: currentUser.workspace.id,
+        assigneeId:  currentUser.profile.id,
+        status:      { not: 'done' },
+      },
+      select: { id: true, title: true, priority: true, dueDate: true, status: true, project: { select: { name: true } } },
+      orderBy: { priority: 'desc' },
+      take: 20,
+    });
 
-    if (!tasks || tasks.length === 0) {
+    if (tasks.length === 0) {
       return NextResponse.json({ focus: [], reason: 'No open tasks to analyse.' });
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const taskList = tasks.map((t: any) => {
-      const isOverdue = t.due_date && t.due_date < today.toISOString();
-      const isDueToday = t.due_date && t.due_date >= today.toISOString() && t.due_date < sevenDays.toISOString();
-      const projectName = Array.isArray(t.projects) ? t.projects[0]?.name : t.projects?.name;
+    const taskList = tasks.map((t) => {
+      const isOverdue  = t.dueDate ? t.dueDate.getTime() < today.getTime() : false;
+      const isDueToday = t.dueDate ? t.dueDate.getTime() >= today.getTime() && t.dueDate.getTime() < sevenDays.getTime() : false;
       return `- "${t.title}" | priority: ${t.priority} | status: ${t.status}${
-        projectName ? ` | project: ${projectName}` : ''
-      }${isOverdue ? ' | OVERDUE' : ''}${isDueToday ? ` | due: ${String(t.due_date).slice(0, 10)}` : ''}`;
+        t.project?.name ? ` | project: ${t.project.name}` : ''
+      }${isOverdue ? ' | OVERDUE' : ''}${isDueToday ? ` | due: ${t.dueDate!.toISOString().slice(0, 10)}` : ''}`;
     }).join('\n');
 
     const content = await callOpenAI([

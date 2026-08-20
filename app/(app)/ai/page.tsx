@@ -1,89 +1,75 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getCurrentUser } from '@/lib/auth/helpers';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { AIHub } from './_components/AIHub';
-import type { Plan } from '@/lib/types';
 import { getEffectivePlan } from '@/lib/plan-gates';
 
 export const metadata: Metadata = { title: 'AI Assistant' };
 
 export default async function AIPage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  const [profileRes, memberRes] = await Promise.all([
-    supabase.from('profiles').select('plan, plan_expires_at, full_name').eq('id', user.id).single(),
-    supabase.from('workspace_members').select('workspace_id').eq('user_id', user.id).single(),
-  ]);
-
-  const plan = getEffectivePlan((profileRes.data?.plan ?? 'free') as Plan, profileRes.data?.plan_expires_at ?? null);
-  const wid  = memberRes.data?.workspace_id;
-  if (!wid) redirect('/login');
+  const plan = getEffectivePlan(currentUser.profile.plan as 'free' | 'solo' | 'team', currentUser.profile.planExpiresAt?.toISOString() ?? null);
+  const wid  = currentUser.workspace.id;
 
   // Monthly usage for Free plan display
   const since = new Date();
   since.setDate(1);
   since.setHours(0, 0, 0, 0);
-  const { count: usageCount } = await supabase
-    .from('ai_usage')
-    .select('id', { count: 'exact', head: true })
-    .eq('user_id', user.id)
-    .gte('used_at', since.toISOString());
+  const usageCount = await prisma.aiUsage.count({
+    where: { userId: currentUser.profile.id, usedAt: { gte: since } },
+  });
 
   // Projects for tool selectors
-  const { data: projectsRaw } = await supabase
-    .from('projects')
-    .select('id, name, color')
-    .eq('workspace_id', wid)
-    .neq('status', 'archived')
-    .order('name');
+  const projectsRaw = await prisma.project.findMany({
+    where: { workspaceId: wid, status: { not: 'archived' } },
+    select: { id: true, name: true, color: true },
+    orderBy: { name: 'asc' },
+  });
 
   // All open top-level tasks in the workspace (no assignee filter — subtask
   // generator needs to see any task, not just ones assigned to the viewer)
-  const { data: tasksRaw } = await supabase
-    .from('tasks')
-    .select('id, title, priority, status, due_date, project_id, projects(name)')
-    .eq('workspace_id', wid)
-    .not('status', 'in', '("done","backlog")')
-    .is('parent_task_id', null)
-    .order('due_date', { ascending: true, nullsFirst: false })
-    .limit(200);
+  const tasksRaw = await prisma.task.findMany({
+    where: {
+      workspaceId:  wid,
+      status:       { notIn: ['done', 'backlog'] },
+      parentTaskId: null,
+    },
+    select: { id: true, title: true, priority: true, status: true, dueDate: true, projectId: true, project: { select: { name: true } } },
+    orderBy: { dueDate: { sort: 'asc', nulls: 'last' } },
+    take: 200,
+  });
 
   // Team members (for Team plan tools)
-  const { data: membersRaw } = plan === 'team'
-    ? await supabase
-        .from('workspace_members')
-        .select('user_id, profiles(full_name, email, avatar_url)')
-        .eq('workspace_id', wid)
-    : { data: [] };
+  const membersRaw = plan === 'team'
+    ? await prisma.workspaceMember.findMany({
+        where: { workspaceId: wid },
+        select: { userId: true, user: { select: { fullName: true, email: true, avatarUrl: true } } },
+      })
+    : [];
 
-  const projects = (projectsRaw ?? []).map((p) => ({
+  const projects = projectsRaw.map((p) => ({
     id: p.id, name: p.name, color: p.color,
   }));
 
-  const tasks = (tasksRaw ?? []).map((t) => {
-    const proj = Array.isArray((t as any).projects) ? (t as any).projects[0] : (t as any).projects;
-    return {
-      id:           t.id,
-      title:        t.title,
-      priority:     t.priority,
-      status:       t.status,
-      due_date:     t.due_date,
-      project_id:   t.project_id,
-      project_name: proj?.name ?? null,
-    };
-  });
+  const tasks = tasksRaw.map((t) => ({
+    id:           t.id,
+    title:        t.title,
+    priority:     t.priority,
+    status:       t.status,
+    due_date:     t.dueDate ? t.dueDate.toISOString() : null,
+    project_id:   t.projectId,
+    project_name: t.project?.name ?? null,
+  }));
 
-  const members = (membersRaw ?? []).map((m) => {
-    const prof = Array.isArray((m as any).profiles) ? (m as any).profiles[0] : (m as any).profiles;
-    return {
-      id:        m.user_id,
-      full_name: prof?.full_name ?? null,
-      email:     prof?.email ?? '',
-    };
-  });
+  const members = membersRaw.map((m) => ({
+    id:        m.userId,
+    full_name: m.user.fullName,
+    email:     m.user.email,
+  }));
 
   return (
     <div className="space-y-6">
@@ -93,7 +79,7 @@ export default async function AIPage() {
       />
       <AIHub
         plan={plan}
-        usageThisMonth={usageCount ?? 0}
+        usageThisMonth={usageCount}
         projects={projects}
         tasks={tasks}
         members={members}

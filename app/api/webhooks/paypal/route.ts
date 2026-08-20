@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { createAdminClient } from '@/lib/supabase/admin';
+import { prisma } from '@/lib/prisma';
 
 const PLAN_MAP: Record<string, 'solo' | 'team'> = {
   [process.env.PAYPAL_PLAN_ID_SOLO_MONTHLY  ?? '']: 'solo',
@@ -16,31 +16,30 @@ export async function POST(request: NextRequest) {
     resource: Record<string, unknown>;
   };
 
-  const supabase = createAdminClient();
-
   try {
     // ── BILLING.SUBSCRIPTION.ACTIVATED ─────────────────────────────
     // Fires when subscription becomes active (start of trial or immediate activation).
     // next_billing_time = trial end date (first payment date).
     if (event_type === 'BILLING.SUBSCRIPTION.ACTIVATED') {
       const planId      = resource?.plan_id as string | undefined;
-      const userId      = resource?.custom_id as string | undefined;
-      const subId       = resource?.id as string | undefined;
-      const plan        = planId ? PLAN_MAP[planId] : undefined;
-      const expiresAt   = (resource?.billing_info as Record<string, unknown> | undefined)?.next_billing_time as string | undefined;
+      const userId       = resource?.custom_id as string | undefined;
+      const subId        = resource?.id as string | undefined;
+      const plan         = planId ? PLAN_MAP[planId] : undefined;
+      const expiresAtStr = (resource?.billing_info as Record<string, unknown> | undefined)?.next_billing_time as string | undefined;
+      const expiresAt    = expiresAtStr ? new Date(expiresAtStr) : null;
 
       if (userId && plan) {
-        await supabase
-          .from('profiles')
-          .update({ plan, plan_expires_at: expiresAt ?? null })
-          .eq('id', userId);
+        await prisma.profile.updateMany({
+          where: { userId },
+          data:  { plan, planExpiresAt: expiresAt },
+        });
       }
 
       if (subId && expiresAt) {
-        await supabase
-          .from('subscriptions')
-          .update({ status: 'trialing', trial_ends_at: expiresAt, current_period_end: expiresAt })
-          .eq('paypal_subscription_id', subId);
+        await prisma.subscription.updateMany({
+          where: { paypalSubscriptionId: subId },
+          data:  { status: 'trialing', trialEndsAt: expiresAt, currentPeriodEnd: expiresAt },
+        });
       }
     }
 
@@ -48,28 +47,29 @@ export async function POST(request: NextRequest) {
     // Fires when a billing cycle completes and a new one starts (trial end → first charge,
     // or each subsequent monthly/yearly renewal).
     if (event_type === 'BILLING.SUBSCRIPTION.RENEWED') {
-      const planId    = resource?.plan_id as string | undefined;
-      const userId    = resource?.custom_id as string | undefined;
-      const subId     = resource?.id as string | undefined;
-      const plan      = planId ? PLAN_MAP[planId] : undefined;
-      const expiresAt = (resource?.billing_info as Record<string, unknown> | undefined)?.next_billing_time as string | undefined;
+      const planId       = resource?.plan_id as string | undefined;
+      const userId        = resource?.custom_id as string | undefined;
+      const subId         = resource?.id as string | undefined;
+      const plan          = planId ? PLAN_MAP[planId] : undefined;
+      const expiresAtStr  = (resource?.billing_info as Record<string, unknown> | undefined)?.next_billing_time as string | undefined;
+      const expiresAt     = expiresAtStr ? new Date(expiresAtStr) : null;
 
       if (userId && plan) {
-        await supabase
-          .from('profiles')
-          .update({ plan, plan_expires_at: expiresAt ?? null })
-          .eq('id', userId);
+        await prisma.profile.updateMany({
+          where: { userId },
+          data:  { plan, planExpiresAt: expiresAt },
+        });
       }
 
       if (subId) {
-        await supabase
-          .from('subscriptions')
-          .update({
-            status:               'active',
-            current_period_end:   expiresAt ?? null,
-            current_period_start: new Date().toISOString(),
-          })
-          .eq('paypal_subscription_id', subId);
+        await prisma.subscription.updateMany({
+          where: { paypalSubscriptionId: subId },
+          data: {
+            status:             'active',
+            currentPeriodEnd:   expiresAt,
+            currentPeriodStart: new Date(),
+          },
+        });
       }
     }
 
@@ -79,11 +79,10 @@ export async function POST(request: NextRequest) {
     if (event_type === 'BILLING.SUBSCRIPTION.PAYMENT.SUCCEEDED') {
       const subId = resource?.id as string | undefined;
       if (subId) {
-        await supabase
-          .from('subscriptions')
-          .update({ status: 'active' })
-          .eq('paypal_subscription_id', subId)
-          .eq('status', 'trialing'); // only transition from trialing → active
+        await prisma.subscription.updateMany({
+          where: { paypalSubscriptionId: subId, status: 'trialing' }, // only transition from trialing → active
+          data:  { status: 'active' },
+        });
       }
     }
 
@@ -96,20 +95,20 @@ export async function POST(request: NextRequest) {
       const subId  = resource?.id as string | undefined;
 
       if (userId) {
-        await supabase
-          .from('profiles')
-          .update({ plan: 'free', plan_expires_at: null })
-          .eq('id', userId);
+        await prisma.profile.updateMany({
+          where: { userId },
+          data:  { plan: 'free', planExpiresAt: null },
+        });
       }
 
       if (subId) {
-        await supabase
-          .from('subscriptions')
-          .update({
-            status:       event_type === 'BILLING.SUBSCRIPTION.EXPIRED' ? 'expired' : 'cancelled',
-            cancelled_at: new Date().toISOString(),
-          })
-          .eq('paypal_subscription_id', subId);
+        await prisma.subscription.updateMany({
+          where: { paypalSubscriptionId: subId },
+          data: {
+            status:      event_type === 'BILLING.SUBSCRIPTION.EXPIRED' ? 'expired' : 'cancelled',
+            cancelledAt: new Date(),
+          },
+        });
       }
     }
 
@@ -118,10 +117,10 @@ export async function POST(request: NextRequest) {
     if (event_type === 'BILLING.SUBSCRIPTION.SUSPENDED') {
       const subId = resource?.id as string | undefined;
       if (subId) {
-        await supabase
-          .from('subscriptions')
-          .update({ status: 'past_due' })
-          .eq('paypal_subscription_id', subId);
+        await prisma.subscription.updateMany({
+          where: { paypalSubscriptionId: subId },
+          data:  { status: 'past_due' },
+        });
       }
     }
   } catch (err) {

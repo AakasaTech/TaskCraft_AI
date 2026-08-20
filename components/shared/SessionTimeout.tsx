@@ -1,14 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
+import { signOut as nextAuthSignOut } from 'next-auth/react';
 
 const IDLE_MS = 30 * 60 * 1000;
 const WARN_MS =  2 * 60 * 1000;
 
 export function SessionTimeout() {
-  const router   = useRouter();
   const [warning,   setWarning]   = useState(false);
   const [countdown, setCountdown] = useState(Math.round(WARN_MS / 1000));
   const idleRef  = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -19,10 +17,8 @@ export function SessionTimeout() {
     clearTimeout(idleRef.current);
     clearTimeout(warnRef.current);
     clearInterval(tickRef.current);
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.push('/login');
-  }, [router]);
+    await nextAuthSignOut({ callbackUrl: '/login' });
+  }, []);
 
   const resetTimers = useCallback(() => {
     setWarning(false);
@@ -75,7 +71,7 @@ export function SessionTimeout() {
           <div>
             <h2 className="text-base font-semibold text-foreground">Session expiring soon</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              You've been inactive. You'll be signed out in{' '}
+              You&apos;ve been inactive. You&apos;ll be signed out in{' '}
               <span className="font-mono font-semibold text-foreground">{display}</span>.
             </p>
           </div>

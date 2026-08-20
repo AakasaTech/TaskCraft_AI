@@ -1,39 +1,43 @@
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getAuthUser } from '@/lib/auth/helpers';
 
 export const runtime = 'nodejs';
 
 export async function GET(req: Request) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const user = await getAuthUser();
   if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
   const limit  = Math.min(parseInt(searchParams.get('limit') ?? '30'), 100);
   const before = searchParams.get('before'); // cursor: created_at of last item
 
-  let query = supabase
-    .from('notifications')
-    .select('*')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-
-  if (before) query = query.lt('created_at', before);
-
-  const [listRes, countRes] = await Promise.all([
-    query,
-    supabase
-      .from('notifications')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-      .eq('is_read', false),
+  const [notifications, unreadCount] = await Promise.all([
+    prisma.notification.findMany({
+      where: {
+        userId: user.id,
+        ...(before ? { createdAt: { lt: new Date(before) } } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    }),
+    prisma.notification.count({ where: { userId: user.id, isRead: false } }),
   ]);
 
-  if (listRes.error) return Response.json({ error: listRes.error.message }, { status: 500 });
-
   return Response.json({
-    notifications: listRes.data,
-    unread_count:  countRes.count ?? 0,
-    has_more:      listRes.data.length === limit,
+    notifications: notifications.map((n) => ({
+      id:           n.id,
+      user_id:      n.userId,
+      workspace_id: n.workspaceId,
+      type:         n.type,
+      title:        n.title,
+      body:         n.body,
+      link:         n.link,
+      is_read:      n.isRead,
+      read_at:      n.readAt ? n.readAt.toISOString() : null,
+      metadata:     n.metadata,
+      created_at:   n.createdAt.toISOString(),
+    })),
+    unread_count: unreadCount,
+    has_more:     notifications.length === limit,
   });
 }

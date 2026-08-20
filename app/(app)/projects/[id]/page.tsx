@@ -2,7 +2,8 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
+import { prisma } from '@/lib/prisma';
 import { ProjectStatusBadge } from '@/components/shared/StatusBadge';
 import { ProjectDetailClient } from './_components/ProjectDetailClient';
 import type { DetailTask, DetailTimeEntry, DetailMember } from './_components/ProjectDetailClient';
@@ -15,9 +16,11 @@ export async function generateMetadata({
   params: Promise<{ id: string }>;
 }): Promise<Metadata> {
   const { id } = await params;
-  const supabase = await createClient();
-  const { data } = await supabase.from('projects').select('name').eq('id', id).maybeSingle();
-  return { title: data?.name ?? 'Project' };
+  const project = await prisma.project.findUnique({
+    where: { id },
+    select: { name: true },
+  });
+  return { title: project?.name ?? 'Project' };
 }
 
 export default async function ProjectDetailPage({
@@ -26,186 +29,218 @@ export default async function ProjectDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return null;
 
-  // Workspace + plan check
-  const [memberRes, profileRes] = await Promise.all([
-    supabase
-      .from('workspace_members')
-      .select('workspace_id')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle(),
-    supabase
-      .from('profiles')
-      .select('plan, plan_expires_at')
-      .eq('id', user.id)
-      .single(),
-  ]);
-
-  const wid = memberRes.data?.workspace_id;
-  const effectivePlan = getEffectivePlan((profileRes.data?.plan ?? 'free') as import('@/lib/types').Plan, profileRes.data?.plan_expires_at ?? null);
+  const wid = currentUser.workspace.id;
+  const effectivePlan = getEffectivePlan(
+    currentUser.profile.plan as import('@/lib/types').Plan,
+    currentUser.profile.planExpiresAt?.toISOString() ?? null
+  );
   const isTeamPlan = effectivePlan === 'team';
 
   // Core project
-  const { data: project } = await supabase
-    .from('projects')
-    .select('*, clients(id, name, company)')
-    .eq('id', id)
-    .eq('workspace_id', wid ?? '')
-    .maybeSingle();
+  const project = await prisma.project.findFirst({
+    where: {
+      id,
+      workspaceId: wid,
+    },
+    include: {
+      client: { select: { id: true, name: true, company: true } },
+    },
+  });
 
   if (!project) notFound();
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const clientRec = Array.isArray((project as any).clients)
-    ? (project as any).clients[0]
-    : (project as any).clients;
+  // Fetch tasks, time entries, members, clients in parallel
+  const [tasksRes, timeRes, membersRes, clientsRes] = await Promise.all([
+    prisma.task.findMany({
+      where: { projectId: id },
+      include: {
+        assignee: { select: { fullName: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
 
-  // Fetch tasks, time entries, members in parallel
-  const [tasksRes, timeRes, membersRes] = await Promise.all([
-    supabase
-      .from('tasks')
-      .select('id, title, status, priority, due_date, assignee_id, profiles!tasks_assignee_id_fkey(full_name)')
-      .eq('project_id', id)
-      .order('created_at', { ascending: false }),
-
-    supabase
-      .from('time_entries')
-      .select('id, description, start_time, duration_minutes, billable, user_id, profiles(full_name)')
-      .eq('project_id', id)
-      .not('duration_minutes', 'is', null)
-      .order('start_time', { ascending: false }),
+    prisma.timeEntry.findMany({
+      where: {
+        projectId: id,
+        durationMinutes: { not: null },
+      },
+      include: {
+        user: { select: { fullName: true } },
+      },
+      orderBy: { startTime: 'desc' },
+    }),
 
     isTeamPlan
-      ? supabase
-          .from('project_members')
-          .select('user_id, role, profiles(full_name, email, avatar_url)')
-          .eq('project_id', id)
-      : Promise.resolve({ data: [], error: null }),
+      ? prisma.projectMember.findMany({
+          where: { projectId: id },
+          include: {
+            user: { select: { fullName: true, email: true, avatarUrl: true } },
+          },
+        })
+      : Promise.resolve([]),
+
+    prisma.client.findMany({
+      where: { workspaceId: wid },
+      select: { id: true, name: true, company: true },
+      orderBy: { name: 'asc' },
+    }),
   ]);
 
   const now = new Date();
 
   // Shape tasks
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tasks: DetailTask[] = (tasksRes.data ?? []).map((t: any) => {
-    const profile = Array.isArray(t.profiles) ? t.profiles[0] : t.profiles;
+  const tasks: DetailTask[] = tasksRes.map((t) => {
     return {
       id:            t.id,
       title:         t.title,
       status:        t.status as TaskStatus,
       priority:      t.priority as TaskPriority,
-      due_date:      t.due_date ?? null,
-      assignee_name: profile?.full_name ?? null,
+      due_date:      t.dueDate ? t.dueDate.toISOString().split('T')[0] : null,
+      assignee_id:   t.assigneeId,
+      assignee_name: t.assignee?.fullName ?? null,
     };
   });
 
   // Shape time entries
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const timeEntries: DetailTimeEntry[] = (timeRes.data ?? []).map((e: any) => {
-    const profile = Array.isArray(e.profiles) ? e.profiles[0] : e.profiles;
+  const timeEntries: DetailTimeEntry[] = timeRes.map((e) => {
     return {
       id:               e.id,
-      description:      e.description ?? null,
-      start_time:       e.start_time,
-      duration_minutes: e.duration_minutes,
+      description:      e.description,
+      start_time:       e.startTime.toISOString(),
+      duration_minutes: e.durationMinutes ?? 0,
       billable:         e.billable,
-      user_name:        profile?.full_name ?? null,
+      user_id:          e.userId,
+      user_name:        e.user?.fullName ?? null,
     };
   });
 
   // Shape members
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const members: DetailMember[] = (membersRes.data ?? []).map((m: any) => {
-    const profile = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles;
+  const members: DetailMember[] = membersRes.map((m) => {
     return {
-      user_id:    m.user_id,
+      user_id:    m.userId,
       role:       m.role as ProjectMemberRole,
-      full_name:  profile?.full_name ?? null,
-      email:      profile?.email ?? '',
-      avatar_url: profile?.avatar_url ?? null,
+      full_name:  m.user?.fullName ?? null,
+      email:      m.user?.email ?? '',
+      avatar_url: m.user?.avatarUrl ?? null,
     };
   });
 
-  // Computed stats
-  const doneCount     = tasks.filter((t) => t.status === 'done').length;
-  const openCount     = tasks.filter((t) => t.status !== 'done').length;
-  const overdueCount  = tasks.filter(
-    (t) => t.status !== 'done' && t.due_date && new Date(t.due_date) < now,
-  ).length;
-
-  const totalMins    = timeEntries.reduce((s, e) => s + e.duration_minutes, 0);
-  const billableMins = timeEntries.filter((e) => e.billable).reduce((s, e) => s + e.duration_minutes, 0);
-  const hoursLogged  = Math.round((totalMins / 60) * 10) / 10;
-  const billableHrs  = Math.round((billableMins / 60) * 10) / 10;
-  const budgetUsed   = billableHrs * (project.hourly_rate ?? 0);
-
-  // Clients list for edit modal
-  const { data: clientsData } = await supabase
-    .from('clients')
-    .select('id, name, company')
-    .eq('workspace_id', wid ?? '')
-    .order('name');
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const clients = (clientsData ?? []).map((c: any) => ({
-    id: c.id as string, name: c.name as string, company: c.company as string | null,
+  const clients = clientsRes.map((c) => ({
+    id:      c.id,
+    name:    c.name,
+    company: c.company,
   }));
 
-  const projectForClient = {
-    id:             project.id,
-    name:           project.name,
-    description:    project.description ?? undefined,
-    color:          project.color,
-    status:         project.status as ProjectStatus,
-    client_id:      project.client_id ?? undefined,
-    client_name:    clientRec?.name ?? null,
-    start_date:     project.start_date ?? undefined,
-    due_date:       project.due_date ?? undefined,
-    budget:         project.budget ?? null,
-    hourly_rate:    project.hourly_rate ?? null,
-    billable:       project.billable,
-    hours_logged:   hoursLogged,
-    billable_hours: billableHrs,
-    budget_used:    budgetUsed,
-    task_count:     tasks.length,
-    done_count:     doneCount,
-    open_count:     openCount,
-    overdue_count:  overdueCount,
-  };
+  // Aggregated stats
+  const totalMinutes  = timeEntries.reduce((s, e) => s + e.duration_minutes, 0);
+  const billableMinutes = timeEntries.filter((e) => e.billable).reduce((s, e) => s + e.duration_minutes, 0);
+  const hoursLogged   = Math.round((totalMinutes / 60) * 10) / 10;
+  const billableHours = Math.round((billableMinutes / 60) * 10) / 10;
+  const hourlyRate    = project.hourlyRate ? Number(project.hourlyRate) : 0;
+  const budget        = project.budget ? Number(project.budget) : 0;
+  const budgetUsed    = billableHours * hourlyRate;
+
+  const doneCount    = tasks.filter((t) => t.status === 'done').length;
+  const openCount    = tasks.filter((t) => t.status !== 'done').length;
+  const overdueCount = tasks.filter(
+    (t) => t.due_date && t.status !== 'done' && new Date(t.due_date) < now,
+  ).length;
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* Back nav */}
-      <div className="flex items-center gap-3">
+      {/* Back link */}
+      <div>
         <Link
           href="/projects"
-          className="flex h-8 w-8 items-center justify-center rounded-lg border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
         >
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back to Projects
         </Link>
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div
-            className="h-4 w-4 shrink-0 rounded-full"
-            style={{ background: project.color }}
-          />
-          <h1 className="page-title truncate">{project.name}</h1>
-          <ProjectStatusBadge status={project.status as ProjectStatus} />
+      </div>
+
+      {/* Header card */}
+      <div className="tc-card p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-4">
+            <span
+              className="h-12 w-12 shrink-0 rounded-2xl shadow-sm"
+              style={{ background: project.color }}
+            />
+            <div>
+              <div className="flex items-center gap-3">
+                <h1 className="text-xl font-bold">{project.name}</h1>
+                <ProjectStatusBadge status={project.status as ProjectStatus} />
+              </div>
+              {project.description && (
+                <p className="mt-1 text-sm text-muted-foreground">{project.description}</p>
+              )}
+              {project.client && (
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Client:{' '}
+                  <span className="font-medium text-foreground">
+                    {project.client.name}
+                    {project.client.company ? ` · ${project.client.company}` : ''}
+                  </span>
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+            {project.startDate && (
+              <div>
+                <span className="font-semibold text-foreground">Start:</span>{' '}
+                {project.startDate.toISOString().split('T')[0]}
+              </div>
+            )}
+            {project.dueDate && (
+              <div>
+                <span className="font-semibold text-foreground">Due:</span>{' '}
+                {project.dueDate.toISOString().split('T')[0]}
+              </div>
+            )}
+            {hourlyRate > 0 && (
+              <div>
+                <span className="font-semibold text-foreground">Rate:</span> ${hourlyRate}/h
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
+      {/* Tabs client */}
       <ProjectDetailClient
-        project={projectForClient}
+        project={{
+          id:             project.id,
+          name:           project.name,
+          description:    project.description ?? undefined,
+          color:          project.color,
+          status:         project.status as ProjectStatus,
+          client_id:      project.clientId ?? undefined,
+          client_name:    project.client?.name ?? null,
+          start_date:     project.startDate ? project.startDate.toISOString().split('T')[0] : undefined,
+          due_date:       project.dueDate ? project.dueDate.toISOString().split('T')[0] : undefined,
+          budget:         project.budget ? Number(project.budget) : null,
+          hourly_rate:    project.hourlyRate ? Number(project.hourlyRate) : null,
+          billable:       project.billable,
+          hours_logged:   hoursLogged,
+          billable_hours: billableHours,
+          budget_used:    budgetUsed,
+          task_count:     tasks.length,
+          done_count:     doneCount,
+          open_count:     openCount,
+          overdue_count:  overdueCount,
+        }}
         tasks={tasks}
         timeEntries={timeEntries}
         members={members}
         clients={clients}
         isTeamPlan={isTeamPlan}
-        currentUserId={user.id}
+        currentUserId={currentUser.profile.id}
       />
     </div>
   );

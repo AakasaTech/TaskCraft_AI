@@ -211,18 +211,15 @@ export class BillCraftService {
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 export async function getBillCraftService(workspaceId: string): Promise<BillCraftService | null> {
-  const { createClient } = await import('@/lib/supabase/server');
-  const supabase = await createClient();
+  const { prisma } = await import('@/lib/prisma');
 
-  const { data } = await supabase
-    .from('integration_settings')
-    .select('config, enabled')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'billcraft')
-    .single();
+  const setting = await prisma.integrationSetting.findUnique({
+    where: { workspaceId_integrationType: { workspaceId, integrationType: 'billcraft' } },
+    select: { config: true },
+  });
 
-  if (!data) return null;
-  const cfg = data.config as { api_key?: string; api_url?: string; enabled?: boolean } | null;
+  if (!setting) return null;
+  const cfg = setting.config as { api_key?: string; api_url?: string; enabled?: boolean } | null;
   const apiKey = cfg?.api_key ?? '';
   const apiUrl = cfg?.api_url;
 

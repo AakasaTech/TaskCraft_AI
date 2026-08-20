@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { SettingsSection } from '@/components/shared/SettingsSection';
 import { DataExportClient } from './_components/DataExportClient';
@@ -10,17 +10,10 @@ import type { Plan } from '@/lib/types';
 export const metadata: Metadata = { title: 'Data Export' };
 
 export default async function DataExportPage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('plan, plan_expires_at')
-    .eq('id', user.id)
-    .single();
-
-  const plan = getEffectivePlan((profile?.plan ?? 'free') as Plan, profile?.plan_expires_at ?? null);
+  const plan = getEffectivePlan(currentUser.profile.plan as Plan, currentUser.profile.planExpiresAt?.toISOString() ?? null);
 
   return (
     <div className="space-y-6 animate-fade-in">

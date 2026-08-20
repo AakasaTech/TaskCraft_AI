@@ -1,45 +1,43 @@
 'use server';
 
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
+import { prisma } from '@/lib/prisma';
 import { SupportCraftService, TASK_TO_TICKET } from '@/lib/supportcraft';
 import type { TaskStatus } from '@/lib/types';
 
 async function getScService(workspaceId: string) {
-  const supabase = await createClient();
-  const { data } = await supabase
-    .from('integration_settings')
-    .select('config, enabled')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'supportcraft')
-    .single();
+  const setting = await prisma.integrationSetting.findUnique({
+    where: {
+      workspaceId_integrationType: {
+        workspaceId,
+        integrationType: 'supportcraft',
+      },
+    },
+  });
 
-  if (!data?.enabled) return null;
-  const cfg = data.config as { api_key?: string; api_url?: string };
+  if (!setting?.enabled) return null;
+  const cfg = setting.config as { api_key?: string; api_url?: string };
   return new SupportCraftService(cfg.api_key ?? '', cfg.api_url);
 }
 
 // ── Add internal note to the linked SupportCraft ticket ───────────────────────
 
 export async function addNoteToTicket(taskId: string, note: string) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  // Find the ticket link
-  const { data: link } = await supabase
-    .from('support_ticket_links')
-    .select('supportcraft_ticket_id, workspace_id')
-    .eq('task_id', taskId)
-    .single();
+  const link = await prisma.supportTicketLink.findFirst({
+    where: { taskId },
+  });
 
   if (!link) return { error: 'No ticket linked to this task' };
 
-  const svc = await getScService(link.workspace_id);
+  const svc = await getScService(link.workspaceId);
   if (!svc) return { error: 'SupportCraft not connected' };
 
   try {
-    await svc.addNote(link.supportcraft_ticket_id, note, true);
+    await svc.addNote(link.supportcraftTicketId, note, true);
     return { data: { ok: true } };
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Failed to add note' };
@@ -49,58 +47,52 @@ export async function addNoteToTicket(taskId: string, note: string) {
 // ── Sync task status back to the linked ticket ────────────────────────────────
 
 export async function syncTaskStatusToTicket(taskId: string) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  // Get current task status
-  const { data: task } = await supabase
-    .from('tasks')
-    .select('status, workspace_id')
-    .eq('id', taskId)
-    .single();
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    select: { status: true, workspaceId: true },
+  });
 
   if (!task) return { error: 'Task not found' };
 
-  // Check sync_status_back option
-  const { data: settings } = await supabase
-    .from('integration_settings')
-    .select('config, enabled')
-    .eq('workspace_id', task.workspace_id)
-    .eq('integration_type', 'supportcraft')
-    .single();
+  const setting = await prisma.integrationSetting.findUnique({
+    where: {
+      workspaceId_integrationType: {
+        workspaceId: task.workspaceId,
+        integrationType: 'supportcraft',
+      },
+    },
+  });
 
-  const cfg = (settings?.config ?? {}) as Record<string, unknown>;
-  if (!settings?.enabled || !cfg.sync_status_back) {
+  const cfg = (setting?.config ?? {}) as Record<string, unknown>;
+  if (!setting?.enabled || !cfg.sync_status_back) {
     return { data: { skipped: true } };
   }
 
-  // Find the ticket link
-  const { data: link } = await supabase
-    .from('support_ticket_links')
-    .select('id, supportcraft_ticket_id')
-    .eq('task_id', taskId)
-    .single();
+  const link = await prisma.supportTicketLink.findFirst({
+    where: { taskId },
+  });
 
   if (!link) return { data: { skipped: true } };
 
   const ticketStatus = TASK_TO_TICKET[task.status as TaskStatus];
   if (!ticketStatus) return { data: { skipped: true } };
 
-  const svc = await getScService(task.workspace_id);
+  const svc = await getScService(task.workspaceId);
   if (!svc) return { data: { skipped: true } };
 
   try {
-    await svc.updateTicketStatus(link.supportcraft_ticket_id, ticketStatus);
+    await svc.updateTicketStatus(link.supportcraftTicketId, ticketStatus);
 
-    await supabase
-      .from('support_ticket_links')
-      .update({
-        ticket_status:  ticketStatus,
-        sync_status:    'synced',
-        last_synced_at: new Date().toISOString(),
-      })
-      .eq('id', link.id);
+    await prisma.supportTicketLink.update({
+      where: { id: link.id },
+      data: {
+        syncStatus: 'synced',
+        updatedAt: new Date(),
+      },
+    });
 
     return { data: { ok: true, ticketStatus } };
   } catch (err) {

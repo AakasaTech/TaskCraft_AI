@@ -1,30 +1,27 @@
 'use server';
 
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getCurrentUser } from '@/lib/auth/helpers';
 import { BillCraftService } from '@/lib/billcraft';
 
-async function getWorkspaceId(userId: string): Promise<string | null> {
-  const supabase = await createClient();
-  const { data } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', userId)
-    .in('role', ['owner', 'admin'])
-    .limit(1)
-    .single();
-  return data?.workspace_id ?? null;
+async function getContext() {
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
+
+  const member = await prisma.workspaceMember.findFirst({
+    where: { userId: currentUser.profile.id, role: { in: ['owner', 'admin'] } },
+    select: { workspaceId: true },
+  });
+
+  return { currentUser, workspaceId: member?.workspaceId ?? null };
 }
 
 export async function saveBillCraftSettings(formData: {
   api_key: string;
   api_url: string;
 }) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
-
-  const workspaceId = await getWorkspaceId(user.id);
+  const { currentUser, workspaceId } = await getContext();
   if (!workspaceId) return { error: 'No workspace found' };
 
   const config = {
@@ -32,27 +29,29 @@ export async function saveBillCraftSettings(formData: {
     api_url: formData.api_url.trim() || 'https://billcraft.aakasa.dev/api',
   };
 
-  const { error } = await supabase
-    .from('integration_settings')
-    .upsert(
-      {
-        workspace_id:     workspaceId,
-        integration_type: 'billcraft',
-        enabled:          !!config.api_key,
+  try {
+    await prisma.integrationSetting.upsert({
+      where: { workspaceId_integrationType: { workspaceId, integrationType: 'billcraft' } },
+      create: {
+        workspaceId,
+        integrationType: 'billcraft',
+        enabled:         !!config.api_key,
         config,
-        created_by:       user.id,
+        createdById:     currentUser.profile.id,
       },
-      { onConflict: 'workspace_id,integration_type' },
-    );
-
-  if (error) return { error: error.message };
-  return { data: { ok: true } };
+      update: {
+        enabled: !!config.api_key,
+        config,
+      },
+    });
+    return { data: { ok: true } };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Failed to save settings' };
+  }
 }
 
 export async function testBillCraftConnection(apiKey?: string, apiUrl?: string) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const { workspaceId } = await getContext();
 
   // If called with explicit values (pre-save test), use those directly
   if (apiKey) {
@@ -60,16 +59,13 @@ export async function testBillCraftConnection(apiKey?: string, apiUrl?: string) 
     return svc.testConnection();
   }
 
-  // Otherwise fall back to saved settings
-  const workspaceId = await getWorkspaceId(user.id);
   if (!workspaceId) return { error: 'No workspace found' };
 
-  const { data: settings } = await supabase
-    .from('integration_settings')
-    .select('config')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'billcraft')
-    .single();
+  // Otherwise fall back to saved settings
+  const settings = await prisma.integrationSetting.findUnique({
+    where: { workspaceId_integrationType: { workspaceId, integrationType: 'billcraft' } },
+    select: { config: true },
+  });
 
   if (!settings) return { error: 'BillCraft not configured' };
 
@@ -79,19 +75,13 @@ export async function testBillCraftConnection(apiKey?: string, apiUrl?: string) 
 }
 
 export async function syncBillCraftClients() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
-
-  const workspaceId = await getWorkspaceId(user.id);
+  const { currentUser, workspaceId } = await getContext();
   if (!workspaceId) return { error: 'No workspace found' };
 
-  const { data: settings } = await supabase
-    .from('integration_settings')
-    .select('config')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'billcraft')
-    .single();
+  const settings = await prisma.integrationSetting.findUnique({
+    where: { workspaceId_integrationType: { workspaceId, integrationType: 'billcraft' } },
+    select: { config: true },
+  });
 
   if (!settings) return { error: 'BillCraft not configured' };
 
@@ -101,30 +91,35 @@ export async function syncBillCraftClients() {
   try {
     const clients = await svc.getClients();
 
-    if (clients.length > 0) {
-      const rows = clients.map((c) => ({
-        workspace_id:       workspaceId,
-        billcraft_client_id: c.id,
-        name:               c.name,
-        email:              c.email ?? null,
-        company:            c.company ?? null,
-        created_by:         user.id,
-      }));
+    for (const c of clients) {
+      const existing = await prisma.client.findFirst({
+        where: { workspaceId, billcraftClientId: c.id },
+        select: { id: true },
+      });
 
-      const { error: upsertErr } = await supabase
-        .from('clients')
-        .upsert(rows, { onConflict: 'workspace_id,billcraft_client_id', ignoreDuplicates: false });
-
-      if (upsertErr) return { error: upsertErr.message };
+      if (existing) {
+        await prisma.client.update({
+          where: { id: existing.id },
+          data:  { name: c.name, email: c.email ?? null, company: c.company ?? null },
+        });
+      } else {
+        await prisma.client.create({
+          data: {
+            workspaceId,
+            billcraftClientId: c.id,
+            name:              c.name,
+            email:             c.email ?? null,
+            company:           c.company ?? null,
+            createdById:       currentUser.profile.id,
+          },
+        });
+      }
     }
 
-    await supabase
-      .from('integration_settings')
-      .update({
-        config: { ...cfg, last_client_sync_at: new Date().toISOString() },
-      })
-      .eq('workspace_id', workspaceId)
-      .eq('integration_type', 'billcraft');
+    await prisma.integrationSetting.update({
+      where: { workspaceId_integrationType: { workspaceId, integrationType: 'billcraft' } },
+      data:  { config: { ...cfg, last_client_sync_at: new Date().toISOString() } },
+    });
 
     return { data: { count: clients.length } };
   } catch (err) {
@@ -133,19 +128,16 @@ export async function syncBillCraftClients() {
 }
 
 export async function disconnectBillCraft() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
-
-  const workspaceId = await getWorkspaceId(user.id);
+  const { workspaceId } = await getContext();
   if (!workspaceId) return { error: 'No workspace found' };
 
-  const { error } = await supabase
-    .from('integration_settings')
-    .update({ enabled: false, config: {} })
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'billcraft');
-
-  if (error) return { error: error.message };
-  return { data: { ok: true } };
+  try {
+    await prisma.integrationSetting.update({
+      where: { workspaceId_integrationType: { workspaceId, integrationType: 'billcraft' } },
+      data:  { enabled: false, config: {} },
+    });
+    return { data: { ok: true } };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Failed to disconnect' };
+  }
 }

@@ -1,7 +1,8 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
+import { prisma } from '@/lib/prisma';
 import type { ProjectStatus, ProjectMemberRole, Plan } from '@/lib/types';
 import { PLANS } from '@/lib/constants';
 import { getEffectivePlan } from '@/lib/plan-gates';
@@ -19,48 +20,33 @@ export interface ProjectInput {
   billable: boolean;
 }
 
-async function getWorkspaceId(userId: string) {
-  const supabase = await createClient();
-  const { data } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  return data?.workspace_id ?? null;
-}
-
 // ── Create ────────────────────────────────────────────────────────────────────
 
 export async function createProject(input: ProjectInput) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
   if (!input.name?.trim()) return { error: 'Project name is required.' };
 
-  const workspaceId = await getWorkspaceId(user.id);
-  if (!workspaceId) return { error: 'No workspace found.' };
+  const workspaceId = currentUser.workspace.id;
+  const uid = currentUser.profile.id;
 
   // Enforce plan project limit
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('plan, plan_expires_at')
-    .eq('id', user.id)
-    .single();
-
-  const planKey = getEffectivePlan((profile?.plan ?? 'free') as Plan, profile?.plan_expires_at ?? null) as keyof typeof PLANS;
-  const limit: number = PLANS[planKey].max_projects;
+  const planKey = getEffectivePlan(
+    currentUser.profile.plan as Plan,
+    currentUser.profile.planExpiresAt?.toISOString() ?? null
+  ) as keyof typeof PLANS;
+  const limit: number = PLANS[planKey]?.max_projects ?? 3;
 
   if (limit !== -1) {
-    const { count } = await supabase
-      .from('projects')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
-      .neq('status', 'archived');
+    const activeCount = await prisma.project.count({
+      where: {
+        workspaceId,
+        status: { not: 'archived' },
+      },
+    });
 
-    if ((count ?? 0) >= limit) {
+    if (activeCount >= limit) {
       return {
         error: `Your ${PLANS[planKey].name} plan allows up to ${limit} active project${limit !== 1 ? 's' : ''}. Archive a project or upgrade your plan to create more.`,
         limitReached: true,
@@ -68,76 +54,82 @@ export async function createProject(input: ProjectInput) {
     }
   }
 
-  const { data, error } = await supabase
-    .from('projects')
-    .insert({
-      workspace_id: workspaceId,
-      created_by:   user.id,
-      name:         input.name.trim(),
-      description:  input.description?.trim() || null,
-      color:        input.color,
-      status:       input.status,
-      client_id:    input.client_id || null,
-      start_date:   input.start_date || null,
-      due_date:     input.due_date || null,
-      budget:       input.budget ?? null,
-      hourly_rate:  input.hourly_rate ?? null,
-      billable:     input.billable,
-    })
-    .select()
-    .single();
+  try {
+    const project = await prisma.project.create({
+      data: {
+        workspaceId,
+        createdById: uid,
+        name:        input.name.trim(),
+        description: input.description?.trim() || null,
+        color:       input.color,
+        status:      input.status,
+        clientId:    input.client_id || null,
+        startDate:   input.start_date ? new Date(input.start_date) : null,
+        dueDate:     input.due_date ? new Date(input.due_date) : null,
+        budget:      input.budget ?? null,
+        hourlyRate:  input.hourly_rate ?? null,
+        billable:    input.billable,
+      },
+    });
 
-  if (error) return { error: error.message };
-
-  revalidatePath('/projects');
-  return { data };
+    revalidatePath('/projects');
+    return { data: project };
+  } catch (err) {
+    console.error('Error creating project:', err);
+    return { error: 'Failed to create project.' };
+  }
 }
 
 // ── Update ────────────────────────────────────────────────────────────────────
 
 export async function updateProject(id: string, input: Partial<ProjectInput>) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const patch: Record<string, unknown> = {};
-  if (input.name         !== undefined) patch.name         = input.name.trim();
-  if (input.description  !== undefined) patch.description  = input.description?.trim() || null;
-  if (input.color        !== undefined) patch.color        = input.color;
-  if (input.status       !== undefined) patch.status       = input.status;
-  if (input.client_id    !== undefined) patch.client_id    = input.client_id || null;
-  if (input.start_date   !== undefined) patch.start_date   = input.start_date || null;
-  if (input.due_date     !== undefined) patch.due_date     = input.due_date || null;
-  if (input.budget       !== undefined) patch.budget       = input.budget ?? null;
-  if (input.hourly_rate  !== undefined) patch.hourly_rate  = input.hourly_rate ?? null;
-  if (input.billable     !== undefined) patch.billable     = input.billable;
+  const data: Record<string, unknown> = {};
+  if (input.name         !== undefined) data.name        = input.name.trim();
+  if (input.description  !== undefined) data.description = input.description?.trim() || null;
+  if (input.color        !== undefined) data.color       = input.color;
+  if (input.status       !== undefined) data.status      = input.status;
+  if (input.client_id    !== undefined) data.clientId    = input.client_id || null;
+  if (input.start_date   !== undefined) data.startDate   = input.start_date ? new Date(input.start_date) : null;
+  if (input.due_date     !== undefined) data.dueDate     = input.due_date ? new Date(input.due_date) : null;
+  if (input.budget       !== undefined) data.budget      = input.budget ?? null;
+  if (input.hourly_rate  !== undefined) data.hourlyRate  = input.hourly_rate ?? null;
+  if (input.billable     !== undefined) data.billable    = input.billable;
 
-  const { data, error } = await supabase
-    .from('projects')
-    .update(patch)
-    .eq('id', id)
-    .select()
-    .single();
+  try {
+    const project = await prisma.project.update({
+      where: { id },
+      data,
+    });
 
-  if (error) return { error: error.message };
-
-  revalidatePath('/projects');
-  revalidatePath(`/projects/${id}`);
-  return { data };
+    revalidatePath('/projects');
+    revalidatePath(`/projects/${id}`);
+    return { data: project };
+  } catch (err) {
+    console.error('Error updating project:', err);
+    return { error: 'Failed to update project.' };
+  }
 }
 
 // ── Delete ────────────────────────────────────────────────────────────────────
 
 export async function deleteProject(id: string) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const { error } = await supabase.from('projects').delete().eq('id', id);
-  if (error) return { error: error.message };
+  try {
+    await prisma.project.delete({
+      where: { id },
+    });
 
-  revalidatePath('/projects');
-  return { success: true };
+    revalidatePath('/projects');
+    return { success: true };
+  } catch (err) {
+    console.error('Error deleting project:', err);
+    return { error: 'Failed to delete project.' };
+  }
 }
 
 // ── Archive / restore ─────────────────────────────────────────────────────────
@@ -157,37 +149,44 @@ export async function addProjectMember(
   userId: string,
   role: ProjectMemberRole = 'member',
 ) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const { data, error } = await supabase
-    .from('project_members')
-    .insert({ project_id: projectId, user_id: userId, role })
-    .select()
-    .single();
+  try {
+    const member = await prisma.projectMember.create({
+      data: {
+        projectId,
+        userId,
+        role,
+      },
+    });
 
-  if (error) return { error: error.message };
-
-  revalidatePath(`/projects/${projectId}`);
-  return { data };
+    revalidatePath(`/projects/${projectId}`);
+    return { data: member };
+  } catch (err) {
+    console.error('Error adding project member:', err);
+    return { error: 'Failed to add project member.' };
+  }
 }
 
 export async function removeProjectMember(projectId: string, userId: string) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const { error } = await supabase
-    .from('project_members')
-    .delete()
-    .eq('project_id', projectId)
-    .eq('user_id', userId);
+  try {
+    await prisma.projectMember.deleteMany({
+      where: {
+        projectId,
+        userId,
+      },
+    });
 
-  if (error) return { error: error.message };
-
-  revalidatePath(`/projects/${projectId}`);
-  return { success: true };
+    revalidatePath(`/projects/${projectId}`);
+    return { success: true };
+  } catch (err) {
+    console.error('Error removing project member:', err);
+    return { error: 'Failed to remove project member.' };
+  }
 }
 
 export async function updateProjectMemberRole(
@@ -195,18 +194,22 @@ export async function updateProjectMemberRole(
   userId: string,
   role: ProjectMemberRole,
 ) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const { error } = await supabase
-    .from('project_members')
-    .update({ role })
-    .eq('project_id', projectId)
-    .eq('user_id', userId);
+  try {
+    await prisma.projectMember.updateMany({
+      where: {
+        projectId,
+        userId,
+      },
+      data: { role },
+    });
 
-  if (error) return { error: error.message };
-
-  revalidatePath(`/projects/${projectId}`);
-  return { success: true };
+    revalidatePath(`/projects/${projectId}`);
+    return { success: true };
+  } catch (err) {
+    console.error('Error updating project member role:', err);
+    return { error: 'Failed to update member role.' };
+  }
 }

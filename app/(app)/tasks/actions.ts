@@ -1,7 +1,8 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/helpers';
+import { prisma } from '@/lib/prisma';
 import type { TaskStatus, TaskPriority } from '@/lib/types';
 import { notifyTaskAssigned, notifyCommentAdded } from '@/lib/notifications';
 
@@ -13,18 +14,6 @@ function sanitizePriority(p: unknown): TaskPriority {
 }
 function sanitizeStatus(s: unknown): TaskStatus {
   return VALID_STATUSES.includes(s as TaskStatus) ? (s as TaskStatus) : 'todo';
-}
-
-async function getWorkspaceId(userId: string) {
-  const supabase = await createClient();
-  const { data } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  return data?.workspace_id ?? null;
 }
 
 // ── Create ────────────────────────────────────────────────────────────────────
@@ -44,64 +33,76 @@ export async function createTask(input: {
   parent_task_id?: string;
   label_ids?: string[];
 }) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const wid = await getWorkspaceId(user.id);
-  if (!wid) return { error: 'No workspace found.' };
+  const wid = currentUser.workspace.id;
+  const uid = currentUser.profile.id;
 
-  const { data: task, error } = await supabase
-    .from('tasks')
-    .insert({
-      workspace_id:    wid,
-      created_by:      user.id,
-      title:           input.title.trim(),
-      description:     input.description?.trim() || null,
-      status:          sanitizeStatus(input.status ?? 'todo'),
-      priority:        sanitizePriority(input.priority ?? 'medium'),
-      project_id:      input.project_id || null,
-      assignee_id:     input.assignee_id || null,
-      due_date:        input.due_date || null,
-      start_date:      input.start_date || null,
-      estimated_hours: input.estimated_hours ?? null,
-      billable:        input.billable ?? false,
-      hourly_rate:     input.hourly_rate ?? null,
-      parent_task_id:  input.parent_task_id || null,
-    })
-    .select()
-    .single();
+  try {
+    const task = await prisma.$transaction(async (tx) => {
+      const created = await tx.task.create({
+        data: {
+          workspaceId:    wid,
+          createdById:    uid,
+          title:          input.title.trim(),
+          description:    input.description?.trim() || null,
+          status:         sanitizeStatus(input.status ?? 'todo'),
+          priority:       sanitizePriority(input.priority ?? 'medium'),
+          projectId:      input.project_id || null,
+          assigneeId:     input.assignee_id || null,
+          dueDate:        input.due_date ? new Date(input.due_date) : null,
+          startDate:      input.start_date ? new Date(input.start_date) : null,
+          estimatedHours: input.estimated_hours ?? null,
+          billable:       input.billable ?? false,
+          hourlyRate:     input.hourly_rate ?? null,
+          parentTaskId:   input.parent_task_id || null,
+        },
+      });
 
-  if (error) return { error: error.message };
+      if (input.label_ids?.length) {
+        await tx.taskLabelAssignment.createMany({
+          data: input.label_ids.map((lid) => ({
+            taskId:  created.id,
+            labelId: lid,
+          })),
+        });
+      }
 
-  // Assign labels
-  if (input.label_ids?.length) {
-    await supabase.from('task_label_assignments').insert(
-      input.label_ids.map((lid) => ({ task_id: task.id, label_id: lid })),
-    );
+      await tx.taskActivity.create({
+        data: {
+          taskId: created.id,
+          userId: uid,
+          action: 'created',
+        },
+      });
+
+      return created;
+    });
+
+    // Notify assignee if different from creator
+    if (input.assignee_id && input.assignee_id !== uid) {
+      const project = input.project_id
+        ? await prisma.project.findUnique({ where: { id: input.project_id }, select: { name: true } })
+        : null;
+
+      notifyTaskAssigned({
+        assigneeId:   input.assignee_id,
+        workspaceId:  wid,
+        taskId:       task.id,
+        taskTitle:    task.title,
+        assignerName: currentUser.profile.fullName || 'Someone',
+        projectName:  project?.name ?? undefined,
+      }).catch(console.error);
+    }
+
+    revalidatePath('/tasks');
+    revalidatePath('/dashboard');
+    return { data: task };
+  } catch (err) {
+    console.error('Error creating task:', err);
+    return { error: 'Failed to create task.' };
   }
-
-  // Notify assignee if different from creator
-  if (input.assignee_id && input.assignee_id !== user.id) {
-    const [profileRes, projectRes] = await Promise.all([
-      supabase.from('profiles').select('full_name').eq('id', user.id).single(),
-      input.project_id
-        ? supabase.from('projects').select('name').eq('id', input.project_id).single()
-        : Promise.resolve({ data: null }),
-    ]);
-    notifyTaskAssigned({
-      assigneeId:   input.assignee_id,
-      workspaceId:  wid,
-      taskId:       task.id,
-      taskTitle:    task.title,
-      assignerName: profileRes.data?.full_name ?? 'Someone',
-      projectName:  projectRes.data?.name ?? undefined,
-    }).catch(console.error);
-  }
-
-  revalidatePath('/tasks');
-  revalidatePath('/dashboard');
-  return { data: task };
 }
 
 // ── Update ────────────────────────────────────────────────────────────────────
@@ -119,234 +120,255 @@ export async function updateTask(id: string, patch: {
   billable?: boolean;
   hourly_rate?: number | null;
 }) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const update: Record<string, unknown> = {};
-  if (patch.title           !== undefined) update.title           = patch.title.trim();
-  if (patch.description     !== undefined) update.description     = patch.description?.trim() || null;
-  if (patch.status          !== undefined) update.status          = sanitizeStatus(patch.status);
-  if (patch.priority        !== undefined) update.priority        = sanitizePriority(patch.priority);
-  if (patch.project_id      !== undefined) update.project_id      = patch.project_id || null;
-  if (patch.assignee_id     !== undefined) update.assignee_id     = patch.assignee_id || null;
-  if (patch.due_date        !== undefined) update.due_date        = patch.due_date || null;
-  if (patch.start_date      !== undefined) update.start_date      = patch.start_date || null;
-  if (patch.estimated_hours !== undefined) update.estimated_hours = patch.estimated_hours ?? null;
-  if (patch.billable        !== undefined) update.billable        = patch.billable;
-  if (patch.hourly_rate     !== undefined) update.hourly_rate     = patch.hourly_rate ?? null;
+  const data: Record<string, unknown> = {};
+  if (patch.title           !== undefined) data.title          = patch.title.trim();
+  if (patch.description     !== undefined) data.description    = patch.description?.trim() || null;
+  if (patch.status          !== undefined) {
+    data.status = sanitizeStatus(patch.status);
+    if (patch.status === 'done') data.completedAt = new Date();
+    else data.completedAt = null;
+  }
+  if (patch.priority        !== undefined) data.priority       = sanitizePriority(patch.priority);
+  if (patch.project_id      !== undefined) data.projectId      = patch.project_id || null;
+  if (patch.assignee_id     !== undefined) data.assigneeId     = patch.assignee_id || null;
+  if (patch.due_date        !== undefined) data.dueDate        = patch.due_date ? new Date(patch.due_date) : null;
+  if (patch.start_date      !== undefined) data.startDate      = patch.start_date ? new Date(patch.start_date) : null;
+  if (patch.estimated_hours !== undefined) data.estimatedHours = patch.estimated_hours ?? null;
+  if (patch.billable        !== undefined) data.billable       = patch.billable;
+  if (patch.hourly_rate     !== undefined) data.hourlyRate    = patch.hourly_rate ?? null;
 
-  const { error } = await supabase.from('tasks').update(update).eq('id', id);
-  if (error) return { error: error.message };
+  try {
+    const updated = await prisma.task.update({
+      where: { id },
+      data,
+      include: { project: { select: { name: true } } },
+    });
 
-  // Notify new assignee when assignee_id changed
-  if (patch.assignee_id && patch.assignee_id !== user.id) {
-    const [taskRes, profileRes, memberRes] = await Promise.all([
-      supabase.from('tasks').select('title, project_id, workspace_id').eq('id', id).single(),
-      supabase.from('profiles').select('full_name').eq('id', user.id).single(),
-      supabase.from('workspace_members').select('workspace_id').eq('user_id', user.id).maybeSingle(),
-    ]);
-    const task        = taskRes.data;
-    const workspaceId = task?.workspace_id ?? memberRes.data?.workspace_id;
-    if (task && workspaceId) {
-      const projectName = task.project_id
-        ? (await supabase.from('projects').select('name').eq('id', task.project_id).single()).data?.name
-        : undefined;
+    // Notify new assignee if changed
+    if (patch.assignee_id && patch.assignee_id !== currentUser.profile.id) {
       notifyTaskAssigned({
         assigneeId:   patch.assignee_id,
-        workspaceId,
+        workspaceId:  updated.workspaceId,
         taskId:       id,
-        taskTitle:    task.title,
-        assignerName: profileRes.data?.full_name ?? 'Someone',
-        projectName,
+        taskTitle:    updated.title,
+        assignerName: currentUser.profile.fullName || 'Someone',
+        projectName:  updated.project?.name ?? undefined,
       }).catch(console.error);
     }
-  }
 
-  revalidatePath('/tasks');
-  revalidatePath('/dashboard');
-  return { success: true };
+    revalidatePath('/tasks');
+    revalidatePath('/dashboard');
+    return { success: true };
+  } catch (err) {
+    console.error('Error updating task:', err);
+    return { error: 'Failed to update task.' };
+  }
 }
 
 // ── Move status (kanban drag) ─────────────────────────────────────────────────
 
 export async function moveTaskStatus(id: string, status: TaskStatus) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const update: Record<string, unknown> = { status };
-  if (status === 'done') update.completed_at = new Date().toISOString();
-  else update.completed_at = null;
+  try {
+    await prisma.task.update({
+      where: { id },
+      data: {
+        status: sanitizeStatus(status),
+        completedAt: status === 'done' ? new Date() : null,
+      },
+    });
 
-  const { error } = await supabase.from('tasks').update(update).eq('id', id);
-  if (error) return { error: error.message };
-
-  revalidatePath('/tasks');
-  revalidatePath('/dashboard');
-  return { success: true };
+    revalidatePath('/tasks');
+    revalidatePath('/dashboard');
+    return { success: true };
+  } catch (err) {
+    console.error('Error moving task status:', err);
+    return { error: 'Failed to update task status.' };
+  }
 }
 
 // ── Delete ────────────────────────────────────────────────────────────────────
 
 export async function deleteTask(id: string) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const { error } = await supabase.from('tasks').delete().eq('id', id);
-  if (error) return { error: error.message };
+  try {
+    await prisma.task.delete({
+      where: { id },
+    });
 
-  revalidatePath('/tasks');
-  revalidatePath('/dashboard');
-  return { success: true };
+    revalidatePath('/tasks');
+    revalidatePath('/dashboard');
+    return { success: true };
+  } catch (err) {
+    console.error('Error deleting task:', err);
+    return { error: 'Failed to delete task.' };
+  }
 }
 
 // ── Labels ────────────────────────────────────────────────────────────────────
 
 export async function createLabel(name: string, color: string) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const wid = await getWorkspaceId(user.id);
-  if (!wid) return { error: 'No workspace.' };
+  try {
+    const label = await prisma.taskLabel.create({
+      data: {
+        workspaceId: currentUser.workspace.id,
+        name:        name.trim(),
+        color,
+        createdById: currentUser.profile.id,
+      },
+    });
 
-  const { data, error } = await supabase
-    .from('task_labels')
-    .insert({ workspace_id: wid, name: name.trim(), color, created_by: user.id })
-    .select()
-    .single();
-
-  if (error) return { error: error.message };
-  revalidatePath('/tasks');
-  return { data };
+    revalidatePath('/tasks');
+    return { data: label };
+  } catch (err) {
+    console.error('Error creating label:', err);
+    return { error: 'Failed to create label.' };
+  }
 }
 
 export async function assignLabel(taskId: string, labelId: string) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const { error } = await supabase
-    .from('task_label_assignments')
-    .insert({ task_id: taskId, label_id: labelId });
+  try {
+    await prisma.taskLabelAssignment.upsert({
+      where: {
+        taskId_labelId: { taskId, labelId },
+      },
+      update: {},
+      create: { taskId, labelId },
+    });
 
-  if (error && !error.message.includes('duplicate')) return { error: error.message };
-  revalidatePath('/tasks');
-  return { success: true };
+    revalidatePath('/tasks');
+    return { success: true };
+  } catch (err) {
+    console.error('Error assigning label:', err);
+    return { error: 'Failed to assign label.' };
+  }
 }
 
 export async function removeLabel(taskId: string, labelId: string) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const { error } = await supabase
-    .from('task_label_assignments')
-    .delete()
-    .eq('task_id', taskId)
-    .eq('label_id', labelId);
+  try {
+    await prisma.taskLabelAssignment.deleteMany({
+      where: { taskId, labelId },
+    });
 
-  if (error) return { error: error.message };
-  revalidatePath('/tasks');
-  return { success: true };
+    revalidatePath('/tasks');
+    return { success: true };
+  } catch (err) {
+    console.error('Error removing label:', err);
+    return { error: 'Failed to remove label.' };
+  }
 }
 
 // ── Comments ──────────────────────────────────────────────────────────────────
 
 export async function addComment(taskId: string, content: string) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
   if (!content.trim()) return { error: 'Comment cannot be empty.' };
 
-  const { data, error } = await supabase
-    .from('task_comments')
-    .insert({ task_id: taskId, user_id: user.id, content: content.trim() })
-    .select('*, profiles(full_name, avatar_url)')
-    .single();
-
-  if (error) return { error: error.message };
-
-  // Notify task assignee / creator about new comment (fire-and-forget)
-  const [taskRes, commenterRes, memberRes] = await Promise.all([
-    supabase.from('tasks').select('title, assignee_id, created_by, workspace_id').eq('id', taskId).single(),
-    supabase.from('profiles').select('full_name').eq('id', user.id).single(),
-    supabase.from('workspace_members').select('workspace_id').eq('user_id', user.id).maybeSingle(),
-  ]);
-
-  if (taskRes.data) {
-    const task        = taskRes.data;
-    const commenter   = commenterRes.data?.full_name ?? 'Someone';
-    const workspaceId = task.workspace_id ?? memberRes.data?.workspace_id;
-    const notifyUser  = task.assignee_id ?? task.created_by;
-
-    if (notifyUser && notifyUser !== user.id && workspaceId) {
-      notifyCommentAdded({
-        taskOwnerId:   notifyUser,
-        workspaceId,
+  try {
+    const comment = await prisma.taskComment.create({
+      data: {
         taskId,
-        taskTitle:     task.title,
-        commenterName: commenter,
-        commentBody:   content.trim(),
-      }).catch(console.error);
-    }
-  }
+        userId:  currentUser.profile.id,
+        content: content.trim(),
+      },
+      include: {
+        user: { select: { fullName: true, avatarUrl: true } },
+      },
+    });
 
-  return { data };
+    const task = await prisma.task.findUnique({
+      where: { id: taskId },
+      select: { title: true, assigneeId: true, createdById: true, workspaceId: true },
+    });
+
+    if (task) {
+      const notifyUser = task.assigneeId ?? task.createdById;
+      if (notifyUser && notifyUser !== currentUser.profile.id) {
+        notifyCommentAdded({
+          taskOwnerId:   notifyUser,
+          workspaceId:   task.workspaceId,
+          taskId,
+          taskTitle:     task.title,
+          commenterName: currentUser.profile.fullName || 'Someone',
+          commentBody:   content.trim(),
+        }).catch(console.error);
+      }
+    }
+
+    return { data: comment };
+  } catch (err) {
+    console.error('Error adding comment:', err);
+    return { error: 'Failed to add comment.' };
+  }
 }
 
 export async function deleteComment(commentId: string) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const { error } = await supabase
-    .from('task_comments')
-    .delete()
-    .eq('id', commentId)
-    .eq('user_id', user.id);
+  try {
+    await prisma.taskComment.deleteMany({
+      where: {
+        id:     commentId,
+        userId: currentUser.profile.id,
+      },
+    });
 
-  if (error) return { error: error.message };
-  return { success: true };
+    return { success: true };
+  } catch (err) {
+    console.error('Error deleting comment:', err);
+    return { error: 'Failed to delete comment.' };
+  }
 }
 
 // ── Subtasks ──────────────────────────────────────────────────────────────────
 
 export async function createSubtask(parentId: string, title: string) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  const wid = await getWorkspaceId(user.id);
-  if (!wid) return { error: 'No workspace.' };
+  try {
+    const parent = await prisma.task.findUnique({
+      where: { id: parentId },
+      select: { projectId: true },
+    });
 
-  // Inherit project from parent
-  const { data: parent } = await supabase
-    .from('tasks')
-    .select('project_id')
-    .eq('id', parentId)
-    .maybeSingle();
+    const subtask = await prisma.task.create({
+      data: {
+        workspaceId:  currentUser.workspace.id,
+        createdById:  currentUser.profile.id,
+        parentTaskId: parentId,
+        projectId:    parent?.projectId ?? null,
+        title:        title.trim(),
+        status:       'todo',
+        priority:     'medium',
+      },
+    });
 
-  const { data, error } = await supabase
-    .from('tasks')
-    .insert({
-      workspace_id:   wid,
-      created_by:     user.id,
-      parent_task_id: parentId,
-      project_id:     parent?.project_id ?? null,
-      title:          title.trim(),
-      status:         'todo',
-      priority:       'medium',
-    })
-    .select()
-    .single();
-
-  if (error) return { error: error.message };
-  revalidatePath('/tasks');
-  return { data };
+    revalidatePath('/tasks');
+    return { data: subtask };
+  } catch (err) {
+    console.error('Error creating subtask:', err);
+    return { error: 'Failed to create subtask.' };
+  }
 }
 
 export async function updateSubtaskStatus(id: string, status: TaskStatus) {
@@ -356,21 +378,25 @@ export async function updateSubtaskStatus(id: string, status: TaskStatus) {
 // ── Sync label assignments for a task ────────────────────────────────────────
 
 export async function syncTaskLabels(taskId: string, labelIds: string[]) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return { error: 'Unauthorized' };
 
-  // Delete existing
-  await supabase.from('task_label_assignments').delete().eq('task_id', taskId);
+  try {
+    await prisma.$transaction([
+      prisma.taskLabelAssignment.deleteMany({ where: { taskId } }),
+      ...(labelIds.length > 0
+        ? [
+            prisma.taskLabelAssignment.createMany({
+              data: labelIds.map((labelId) => ({ taskId, labelId })),
+            }),
+          ]
+        : []),
+    ]);
 
-  // Insert new
-  if (labelIds.length) {
-    const { error } = await supabase
-      .from('task_label_assignments')
-      .insert(labelIds.map((lid) => ({ task_id: taskId, label_id: lid })));
-    if (error) return { error: error.message };
+    revalidatePath('/tasks');
+    return { success: true };
+  } catch (err) {
+    console.error('Error syncing task labels:', err);
+    return { error: 'Failed to sync task labels.' };
   }
-
-  revalidatePath('/tasks');
-  return { success: true };
 }

@@ -33,12 +33,12 @@ export default function PrivacyPage() {
 
           <section>
             <h2>3. Data Storage and Security</h2>
-            <p>Your data is stored in Supabase PostgreSQL with row-level security policies enforced. All data in transit is encrypted using TLS. We follow industry-standard security practices.</p>
+            <p>Your data is stored in a managed Neon PostgreSQL database, access-scoped to your workspace. All data in transit is encrypted using TLS. We follow industry-standard security practices.</p>
           </section>
 
           <section>
             <h2>4. Third-Party Services</h2>
-            <p>We use PayPal for payment processing and Supabase for database and authentication. When you connect BillCraft AI or SupportCraft AI integrations, only the data you explicitly share is transferred between services.</p>
+            <p>We use PayPal for payment processing and Neon for database hosting. When you connect BillCraft AI or SupportCraft AI integrations, only the data you explicitly share is transferred between services.</p>
           </section>
 
           <section>

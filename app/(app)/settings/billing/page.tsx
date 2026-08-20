@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { getCurrentUser } from '@/lib/auth/helpers';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { SettingsSection } from '@/components/shared/SettingsSection';
 import { BillingClient } from './_components/BillingClient';
@@ -9,29 +10,17 @@ import { getEffectivePlan } from '@/lib/plan-gates';
 export const metadata: Metadata = { title: 'Billing' };
 
 export default async function BillingPage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
+  const currentUser = await getCurrentUser();
+  if (!currentUser) return null;
 
-  const [profileRes, subRes] = await Promise.all([
-    supabase
-      .from('profiles')
-      .select('plan, plan_expires_at')
-      .eq('id', user.id)
-      .single(),
+  const subscription = await prisma.subscription.findFirst({
+    where: { userId: currentUser.id },
+    orderBy: { createdAt: 'desc' },
+    select: { paypalSubscriptionId: true, status: true, currentPeriodEnd: true, cancelledAt: true, trialEndsAt: true },
+  });
 
-    supabase
-      .from('subscriptions')
-      .select('paypal_subscription_id, status, current_period_end, cancelled_at, trial_ends_at')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-  ]);
-
-  const planExpiresAt  = profileRes.data?.plan_expires_at ?? null;
-  const currentPlan    = getEffectivePlan((profileRes.data?.plan ?? 'free') as Plan, planExpiresAt);
-  const subscription   = subRes.data;
+  const planExpiresAt = currentUser.profile.planExpiresAt?.toISOString() ?? null;
+  const currentPlan   = getEffectivePlan(currentUser.profile.plan as Plan, planExpiresAt);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -45,11 +34,11 @@ export default async function BillingPage() {
         description="Your current plan and upgrade options."
       >
         <BillingClient
-          userId={user.id}
+          userId={currentUser.id}
           currentPlan={currentPlan}
           planExpiresAt={planExpiresAt}
-          trialEndsAt={subscription?.trial_ends_at ?? null}
-          subscriptionId={subscription?.paypal_subscription_id ?? null}
+          trialEndsAt={subscription?.trialEndsAt?.toISOString() ?? null}
+          subscriptionId={subscription?.paypalSubscriptionId ?? null}
           subscriptionStatus={subscription?.status ?? null}
         />
       </SettingsSection>

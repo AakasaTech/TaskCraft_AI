@@ -1,8 +1,8 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
-import { createAdminClient } from '@/lib/supabase/admin';
+import { getCurrentUser } from '@/lib/auth/helpers';
+import { prisma } from '@/lib/prisma';
 import { TeamClient } from './_components/TeamClient';
 import { getEffectivePlan } from '@/lib/plan-gates';
 import type { Plan } from '@/lib/types';
@@ -10,17 +10,14 @@ import type { Plan } from '@/lib/types';
 export const metadata: Metadata = { title: 'Team Management' };
 
 export default async function TeamPage() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const currentUser = await getCurrentUser();
+  if (!currentUser) redirect('/login');
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('plan, plan_expires_at')
-    .eq('id', user.id)
-    .single();
+  const effectivePlan = getEffectivePlan(
+    currentUser.profile.plan as Plan,
+    currentUser.profile.planExpiresAt?.toISOString() ?? null
+  );
 
-  const effectivePlan = getEffectivePlan((profile?.plan ?? 'free') as Plan, profile?.plan_expires_at ?? null);
   if (effectivePlan !== 'team') {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 text-center px-4">
@@ -55,57 +52,75 @@ export default async function TeamPage() {
     );
   }
 
-  const { data: membership } = await supabase
-    .from('workspace_members')
-    .select('workspace_id, role')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  const wid = membership?.workspace_id;
-  if (!wid) redirect('/dashboard');
-
-  const admin = createAdminClient();
+  const wid = currentUser.workspace.id;
 
   const [membersRes, invitesRes, projectsRes] = await Promise.all([
-    admin
-      .from('workspace_members')
-      .select('id, user_id, role, joined_at, profiles(full_name, avatar_url, email)')
-      .eq('workspace_id', wid)
-      .order('created_at', { ascending: true }),
+    prisma.workspaceMember.findMany({
+      where: { workspaceId: wid },
+      include: {
+        user: { select: { fullName: true, avatarUrl: true, email: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    }),
 
-    admin
-      .from('workspace_invitations')
-      .select('*')
-      .eq('workspace_id', wid)
-      .is('accepted_at', null)
-      .gt('expires_at', new Date().toISOString())
-      .order('created_at', { ascending: false }),
+    prisma.workspaceInvitation.findMany({
+      where: {
+        workspaceId: wid,
+        acceptedAt:  null,
+        expiresAt:   { gt: new Date() },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
 
-    supabase
-      .from('projects')
-      .select('id, name, color, status')
-      .eq('workspace_id', wid)
-      .neq('status', 'archived')
-      .order('position', { ascending: true }),
+    prisma.project.findMany({
+      where: {
+        workspaceId: wid,
+        status: { not: 'archived' },
+      },
+      select: { id: true, name: true, color: true, status: true },
+      orderBy: { position: 'asc' },
+    }),
   ]);
 
-  const members = (membersRes.data ?? []).map((m) => ({
-    ...m,
-    profiles: Array.isArray(m.profiles)
-      ? (m.profiles[0] as { full_name: string | null; avatar_url: string | null; email: string } | undefined) ?? null
-      : m.profiles as { full_name: string | null; avatar_url: string | null; email: string } | null,
+  const members = membersRes.map((m) => ({
+    id:       m.id,
+    user_id:  m.userId,
+    role:     m.role,
+    joined_at: m.joinedAt?.toISOString() ?? null,
+    profiles: {
+      full_name:  m.user.fullName,
+      avatar_url: m.user.avatarUrl,
+      email:      m.user.email,
+    },
+  }));
+
+  const pendingInvites = invitesRes.map((i) => ({
+    id:           i.id,
+    workspace_id: i.workspaceId,
+    email:        i.email,
+    role:         i.role,
+    token:        i.token,
+    invited_by:   i.invitedById,
+    accepted_at:  i.acceptedAt?.toISOString() ?? null,
+    expires_at:   i.expiresAt.toISOString(),
+    created_at:   i.createdAt.toISOString(),
+  }));
+
+  const projects = projectsRes.map((p) => ({
+    id:     p.id,
+    name:   p.name,
+    color:  p.color,
+    status: p.status,
   }));
 
   return (
     <TeamClient
-      currentUserId={user.id}
-      currentUserRole={membership.role}
+      currentUserId={currentUser.profile.id}
+      currentUserRole={currentUser.membership.role}
       workspaceId={wid}
       members={members}
-      pendingInvites={invitesRes.data ?? []}
-      projects={projectsRes.data ?? []}
+      pendingInvites={pendingInvites as any}
+      projects={projects as any}
     />
   );
 }

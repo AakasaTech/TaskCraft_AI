@@ -1,6 +1,6 @@
 import https from 'node:https';
-import { createClient } from '@/lib/supabase/server';
-import { createAdminClient } from '@/lib/supabase/admin';
+import { prisma } from '@/lib/prisma';
+import { getAuthUser } from '@/lib/auth/helpers';
 import type { Plan } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -72,8 +72,7 @@ export async function POST(req: Request) {
       return Response.json({ error: 'Invalid planKey' }, { status: 400 });
     }
 
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const user = await getAuthUser();
     if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
     // Trial end: use PayPal's next_billing_time if available, else now + TRIAL_DAYS
@@ -117,54 +116,44 @@ export async function POST(req: Request) {
       }
     }
 
-    const trialEndsAtIso = trialEndsAt.toISOString();
-
     // Upsert subscription record with trial dates
-    const { data: existing } = await supabase
-      .from('subscriptions')
-      .select('id')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const existing = await prisma.subscription.findFirst({
+      where: { userId: user.id },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
 
-    const subUpsert = existing
-      ? await supabase.from('subscriptions').update({
-          plan_id:                planKey,
-          status:                 'trialing',
-          paypal_subscription_id: subscriptionID,
-          trial_ends_at:          trialEndsAtIso,
-          current_period_start:   now.toISOString(),
-          current_period_end:     trialEndsAtIso,
-          updated_at:             now.toISOString(),
-        }).eq('id', existing.id)
-      : await supabase.from('subscriptions').insert({
-          user_id:                user.id,
-          plan_id:                planKey,
-          status:                 'trialing',
-          paypal_subscription_id: subscriptionID,
-          trial_ends_at:          trialEndsAtIso,
-          current_period_start:   now.toISOString(),
-          current_period_end:     trialEndsAtIso,
-        });
+    const subData = {
+      planId:                planKey,
+      status:                'trialing',
+      paypalSubscriptionId:  subscriptionID,
+      trialEndsAt,
+      currentPeriodStart:    now,
+      currentPeriodEnd:      trialEndsAt,
+    };
 
-    if (subUpsert.error) {
-      console.error('[paypal/subscription] upsert error:', subUpsert.error.message);
-      return Response.json({ error: subUpsert.error.message }, { status: 500 });
+    try {
+      if (existing) {
+        await prisma.subscription.update({ where: { id: existing.id }, data: subData });
+      } else {
+        await prisma.subscription.create({ data: { userId: user.id, ...subData } });
+      }
+    } catch (err) {
+      console.error('[paypal/subscription] upsert error:', err);
+      return Response.json({ error: err instanceof Error ? err.message : 'Failed to save subscription' }, { status: 500 });
     }
 
     // Grant plan access immediately — don't wait for the webhook
-    const admin = createAdminClient();
-    const { error: profileErr } = await admin
-      .from('profiles')
-      .update({ plan: planKey, plan_expires_at: trialEndsAtIso })
-      .eq('id', user.id);
-
-    if (profileErr) {
-      console.error('[paypal/subscription] profile update error:', profileErr.message);
+    try {
+      await prisma.profile.update({
+        where: { userId: user.id },
+        data:  { plan: planKey, planExpiresAt: trialEndsAt },
+      });
+    } catch (err) {
+      console.error('[paypal/subscription] profile update error:', err);
     }
 
-    return Response.json({ ok: true, trialEndsAt: trialEndsAtIso });
+    return Response.json({ ok: true, trialEndsAt: trialEndsAt.toISOString() });
   } catch (err) {
     console.error('[paypal/subscription] unexpected error:', err);
     return Response.json({ error: 'Internal server error' }, { status: 500 });

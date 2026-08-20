@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { signOut } from 'next-auth/react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import type { Plan } from '@/lib/types';
 
@@ -94,9 +94,7 @@ export function Sidebar({ user, onCloseMobile }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   async function handleSignOut() {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.push('/login');
+    await signOut({ callbackUrl: '/login' });
   }
 
   const initials = user?.full_name

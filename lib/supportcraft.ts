@@ -252,18 +252,15 @@ export class SupportCraftService {
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 export async function getSupportCraftService(workspaceId: string): Promise<SupportCraftService | null> {
-  const { createClient } = await import('@/lib/supabase/server');
-  const supabase = await createClient();
+  const { prisma } = await import('@/lib/prisma');
 
-  const { data } = await supabase
-    .from('integration_settings')
-    .select('config, enabled')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_type', 'supportcraft')
-    .single();
+  const setting = await prisma.integrationSetting.findUnique({
+    where: { workspaceId_integrationType: { workspaceId, integrationType: 'supportcraft' } },
+    select: { config: true },
+  });
 
-  if (!data) return null;
-  const cfg = data.config as { api_key?: string; api_url?: string } | null;
+  if (!setting) return null;
+  const cfg = setting.config as { api_key?: string; api_url?: string } | null;
   return new SupportCraftService(cfg?.api_key ?? '', cfg?.api_url);
 }
 
